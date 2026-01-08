@@ -25,17 +25,27 @@
  *   Added offset angle correction processing for actual vs measured speed
  *   Improved power on button press timing 
  *   Added init/reboot option for serial commands
+ * v5
+ *   Corrected error in LCD digit decoding (parameter swapped)
+ *   Added additional debugging options
+ *   Added main loop timing information display options
+ *   Added ability to change units between MPH/KPH
+ *   Improved power button press logic
+ *   Fixed bug in serial read logic due to misplaced breaks in case statments
+ *   Fixed bug in sDelay causing unexpected results if a long operation resulted in negative delay
  */
 
 
 
 #define INFO_ON                //Print informational outputs (e.g. sent power commands, low battery)
-#define DEBUG_ON               //Print debug statments
-#define DEBUG_CONTROLS_ON      //Run test of button actions during startup
+//#define DEBUG_ON               //Print debug statments
+//#define DEBUG_CONTROLS_ON      //Run test of button actions during startup
 //#define DEBUG_TRIGGER_ON       //Print information when pulling/releasing trigger
+//#define DEBUG_PBUTTON_ON       //Print information when pulling/releasing power button
 //#define DEBUG_MAIN_LOOP_TIME   //Print elapsed time metrics for main processing loop
 //#define DEBUG_LED_PIN 13       //Flash LED pin 13 to debug USB signal detect and sleep
 //#define DEBUG_SLEEP_FOREVER    //After setup, sleeps forever.  Used for debugging RFI issues when running.
+//#define DEBUG_NEVER_SLEEP      //Ignore sleep commands.  Used for debugging without pins connected.
 
 #define INFO_SERIAL_INPUT_ON   //Print informational outputs (e.g. echo back commands after set)
 //#define DEBUG_SERIAL_INPUT_ON  //Print debug statments related to serial input received
@@ -124,7 +134,7 @@ int measuredSpeed=0, oldSpeed=0;//converted data to speed
 int actualSpeed=0; //Speed after correction for cosine
 boolean measuredSpeedValid = false; //stores whether the speed data is valid
 int failedDecodeCount = 0; //count of invalid readings since startup
-long eTimeEndMainLoop = 0, eTimeStartMainLoop=0; //used to compute main loop elapsed time for user
+unsigned long eTimeEndMainLoop = 0, eTimeStartMainLoop=0; //used to compute main loop elapsed time for user
 int offsetAngle = 0;
 
 //Run control options (could be adjusted later, defaults set here)
@@ -138,7 +148,7 @@ void setup()
 {
   Serial.begin(115200);
   
-  long watchdog = millis();
+  unsigned long watchdog = millis();
   //wait up to 5 sec for serial to initialize
   while(((millis()-watchdog) < 5000) && !Serial && isUsbPower());
 
@@ -154,6 +164,7 @@ void setup()
         Serial.println(F("Starting up..."));
 
   }
+
   
 
   //Initialize pins and such
@@ -510,7 +521,7 @@ void printSpeed()
       {
         Serial.print(F("Speed "));
         Serial.print(actualSpeed);
-        Serial.print( isMph() ? F(" mph") : (isKph() ? F(" kph") : F(" ???")));
+        Serial.print( isMph() ? F(" MPH") : (isKph() ? F(" KPH") : F(" ???")));
 
         //If angle was compensating, print raw speed too
         if(offsetAngle > 0)
@@ -600,10 +611,10 @@ void dumpLcd()
     Serial.print(F(" "));Serial.print( segment[0][1] );Serial.print(F(" "));           Serial.print(F(" . "));   Serial.print(F(" "));Serial.print( segment[0][3] );Serial.print(F(" "));            Serial.print(F(" . "));  Serial.print(F(" "));Serial.print( segment[0][5] );Serial.println(F(" "));
   
     Serial.println();
-    Serial.print(F("mph  = "));Serial.println(segment[2][6]);
-    Serial.print(F("kph  = "));Serial.println(segment[1][6]);
-    Serial.print(F("batt = "));Serial.println(segment[0][6]);
-    Serial.print(F("rdr  = "));Serial.println(segment[3][6]);
+    Serial.print(F("MPH  = "));Serial.println(segment[2][6]);
+    Serial.print(F("KPH  = "));Serial.println(segment[1][6]);
+    Serial.print(F("BATT = "));Serial.println(segment[0][6]);
+    Serial.print(F("RDR  = "));Serial.println(segment[3][6]);
     Serial.println();
   }
 }
@@ -669,6 +680,113 @@ boolean isPowerOn()
   return isKph() || isMph();
 }
 
+//Send command to radar (internal use only)
+void toggleMphKph()
+{
+  holdTrigger();
+  delay(100);
+  holdPowerButton();
+  delay(100);
+  releasePowerButton();
+  delay(100);
+  releaseTrigger();
+  delay(100);
+}
+
+//Send command to radar
+void changeToMph()
+{
+  if(isPowerOn())
+  {
+
+    if(isMph())
+    {
+      #ifdef INFO_ON
+      if(Serial) Serial.println(F("Skipping: changeToMph - Units are already MPH"));
+      #endif
+    }
+    else
+    {
+      #ifdef INFO_ON
+      if(Serial) Serial.println(F("Sending: changeToMph"));
+      #endif
+      
+      toggleMphKph();
+    }
+  }
+  
+  scanLcd();
+
+  //Verify units
+  #ifdef INFO_ON
+  if(Serial) Serial.println( isMph() ? F("changeToMph: OK") : F("changeToMph: FAIL"));
+  #endif
+}
+
+//Send command to radar
+void changeToKph()
+{
+  if(isPowerOn())
+  {
+
+    if(isKph())
+    {
+      #ifdef INFO_ON
+      if(Serial) Serial.println(F("Skipping: changeToKph - Units are already KPH"));
+      #endif
+    }
+    else
+    {
+      #ifdef INFO_ON
+      if(Serial) Serial.println(F("Sending: changeToKph"));
+      #endif
+    
+      toggleMphKph();
+    }
+  }
+  
+  scanLcd();
+
+  //Verify units
+  #ifdef INFO_ON
+  if(Serial) Serial.println( isKph() ? F("changeToKph: OK") : F("changeToKph: FAIL"));
+  #endif
+}
+
+//Send command to radar (internal use only)
+void holdPowerButton()
+{
+  #ifdef DEBUG_PBUTTON_ON
+  if(Serial) Serial.println(F("Sending: holdPowerButton"));
+  #endif
+
+  //Set it as an output to pull it hard low
+  //Real life these push together under one rubber cap
+  pinMode(POWER_ON_PIN,OUTPUT);
+  pinMode(POWER_OFF_PIN,OUTPUT);
+
+  #ifdef DEBUG_PBUTTON_ON
+  if(Serial) Serial.println(F("Done: holdPowerButton"));
+  #endif
+}
+
+//Send command to radar (internal use only)
+void releasePowerButton()
+{
+  #ifdef DEBUG_PBUTTON_ON
+  if(Serial) Serial.println(F("Sending: releasePowerButton"));
+  #endif
+  
+  //Set it as an input to let it float
+  //Real life these push together under one rubber cap
+  pinMode(POWER_ON_PIN,INPUT);
+  pinMode(POWER_OFF_PIN,INPUT);
+
+  #ifdef DEBUG_PBUTTON_ON
+  if(Serial) Serial.println(F("Done: releasePowerButton"));
+  #endif
+}
+
 //Send command to radar
 void powerOn()
 {
@@ -677,12 +795,11 @@ void powerOn()
   #endif
 
   releaseTrigger();
-  
-  //Set it as an output to pull it hard low
-  pinMode(POWER_ON_PIN,OUTPUT);
   delay(100);
-  //Set it as an input to let it float
-  pinMode(POWER_ON_PIN,INPUT);
+  
+  holdPowerButton();
+  delay(100);
+  releasePowerButton();
   delay(100);
   scanLcd();
 
@@ -713,10 +830,10 @@ void powerOff()
   releaseTrigger();
   
   //Set it as an output to pull it hard low
-  pinMode(POWER_OFF_PIN,OUTPUT);
+  holdPowerButton();
   delay(3100); //wait 3 sec countdown plus a bit
   //Set it as an input to let it float
-  pinMode(POWER_OFF_PIN,INPUT);
+  releasePowerButton();
   //Delay for voltage to stabilize
   delay(100);
 
@@ -773,6 +890,8 @@ void goToSleep()
   #ifdef DEBUG_LED_PIN
   flashDebugLED(1000,5);
   #endif
+
+  #ifndef DEBUG_NEVER_SLEEP
   
   enableInterrupt();       // enable the interrupt pin so it can wake back up
   
@@ -786,6 +905,8 @@ void goToSleep()
                            // disable sleep...
 
   disableInterrupt();      // disable the interrupt because it interferes with USB
+
+  #endif
 
   #ifdef DEBUG_LED_PIN
   flashDebugLED(100,50);
@@ -850,6 +971,8 @@ void printSerialCommands()
     Serial.println(F("#         [T]RIG    # : Ctrl Trigger       1=Hold 0=Release  #"));
     Serial.println(F("#         [P]OWER   # : Ctrl Power Button  1=On   0=Off      #"));
     Serial.println(F("#         [M]EASURE   : Poll Speed Measurement (if changed)  #"));
+    Serial.println(F("#         [U]NITS   # : Set Units (1)=MPH; (2)=KPH           #"));
+    Serial.println(F("#                       (cycle power to save persistant)     #"));
     Serial.println(F("#         [R]EFRESH   : Poll LCD Scan and print LCD data     #"));
     Serial.println(F("#                       Note: This prints in code style      #"));
     Serial.println(F("#                       Example: (-1 speed = invalid)        #"));
@@ -1000,8 +1123,8 @@ void readSerialCommands()
             Serial.print(F("ACTION TRIG = "));
             Serial.println(isRadiating());
           }
-          break;
           #endif
+          break;
           
         case 'P': //POWER # - Ctrl Power Button 1=On   0=Off
           if(serialCommandArg == 1)
@@ -1022,13 +1145,33 @@ void readSerialCommands()
           #ifdef INFO_SERIAL_INPUT_ON
           Serial.print(F("ACTION POWER = "));
           Serial.println(isPowerOn());
-          break;
           #endif
+          break;
           
         case 'M': //Measure - Ctrl Poll Speed Measurement (if changed)
           scanLcd();
           decodeLcdSpeed();
           printSpeed();  
+          break;
+          
+        case 'U': //Units - Set Units (1)=MPH; (2)=KPH
+          if(serialCommandArg == 1)
+          {
+            changeToMph();
+          }
+          else if(serialCommandArg == 2)
+          {
+            changeToKph();
+          }
+          else
+          {
+            if(Serial) Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
+          }
+
+          #ifdef INFO_SERIAL_INPUT_ON
+          Serial.print(F("ACTION UNITS = "));
+          Serial.println(isMph() ? F(" MPH") : (isKph() ? F(" KPH") : F(" ???")));
+          #endif
           break;
           
         case 'R': //REFRESH - Poll LCD Scan and print LCD data
@@ -1164,6 +1307,7 @@ void readSerialCommands()
               Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
             }
           }
+          break;
           
         default:
           if(Serial) Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
@@ -1176,20 +1320,28 @@ void readSerialCommands()
 
 //serial input friendly delay...monitors for serial commands faster
 #define SDELAY_MS 250
-void sDelay(int ms)
+void sDelay(long ms)
 {
-  //do tiny delays of 20ms until we are waiting less than that
+  //do tiny delays of SDELAY_MS ms until we are waiting less than that
   while(ms > SDELAY_MS)
   {
     //Time and run readSerialCommands
-    long eTime=millis();
+    unsigned long eTime=millis();
     readSerialCommands();
     eTime = millis()-eTime;
 
-    //Wait remainder of SDELAY_MS
-    ms-=(SDELAY_MS-eTime);
-    delay(SDELAY_MS-eTime);
+    //Wait remainder of SDELAY_MS    
+    if(eTime < SDELAY_MS)
+    {
+      delay(SDELAY_MS-eTime);
+      ms-=SDELAY_MS;
+    }
+    else
+    {
+      ms-=eTime;
+    }
   }
+  
   //if there was some small <SDELAY_MS ms left, wait that amount now.
   if(ms > 0)
     delay(ms);
