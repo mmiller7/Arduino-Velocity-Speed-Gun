@@ -58,7 +58,7 @@ Additional photos of final assembly are located in the [Photos](Photos) director
 
 I also discovered we have no C-sized batteries in the house but a piece of 1/2 inch PVC water pipe makes a perfect adapter to allow use of AA batteries in the original battery compartment and the original spring is sufficiently long to make a good connection.  Rechargable AAs work fine too.
 
-NOTE - on battery power after the modifications the gun will draw about 5 milliamps due to the additional voltage converters and arduino in sleep mode.  That's not a big deal but will drian batteries over time even with the gun powered down so I recommend removing the batteries if it will not be used for multiple days.
+NOTE - on battery power after the modifications, when powered off the gun will draw about 5 milliamps due to the additional voltage converters and arduino in sleep mode.  That's not a big deal but will drian batteries over time even with the gun powered down so I recommend removing the batteries if it will not be used for multiple days.
 
 
 
