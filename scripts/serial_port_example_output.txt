@@ -1,0 +1,17 @@
+Speed 78 MPH
+Speed 80 MPH
+Speed 78 MPH
+CONFIG CORR   = 1
+Speed 80 MPH (Measured 80 @ 1 degrees offset)
+Speed 82 MPH (Measured 82 @ 1 degrees offset)
+Speed 80 MPH (Measured 80 @ 1 degrees offset)
+CONFIG VERIFY = 1
+Speed 79 MPH (Measured 79 @ 1 degrees offset) verified at 99 %
+Speed 78 MPH (Measured 78 @ 1 degrees offset) verified at 0 %
+Speed 79 MPH (Measured 79 @ 1 degrees offset) verified at 99 %
+Speed 82 MPH (Measured 82 @ 1 degrees offset) verified at 99 %
+CONFIG CORR   = 0
+Speed 77 MPH verified at 95 %
+Speed 79 MPH verified at 99 %
+Speed 78 MPH verified at 0 %
+
