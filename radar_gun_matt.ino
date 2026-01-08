@@ -9,7 +9,7 @@
  * v2
  *   Optimized readability
  *   Added serial command processing
- *   Optimized LCD digit decoding (NOTE - this version may have decoding bug in parameter order
+ *   Optimized LCD digit decoding (NOTE - this version may have decoding bug in parameter order)
  *   Improved preprocessor directives for debugging
  * v3
  *   LCD digit decoding (NOTE - this version may have decoding bug in parameter order)
@@ -17,16 +17,25 @@
  *   Improved preprocessor directives for debugging
  *   Changed serial print strings to F() for lower RAM use
  *   Improved main processing loop
+ * v4
+ *   LCD digit decoding (NOTE - this version may have decoding bug in parameter order)
+ *   Added debugging for sleep and RFI diagnostics
+ *   Fixed main processing loop bug which could cause radar to keep radiating when scan time set to zero
+ *   Improved main processing efficiency
+ *   Added offset angle correction processing for actual vs measured speed
+ *   Improved power on button press timing 
+ *   Added init/reboot option for serial commands
  */
 
 
 
 #define INFO_ON                //Print informational outputs (e.g. sent power commands, low battery)
-//#define DEBUG_ON               //Print debug statments
-//#define DEBUG_CONTROLS_ON      //Run test of button actions during startup
+#define DEBUG_ON               //Print debug statments
+#define DEBUG_CONTROLS_ON      //Run test of button actions during startup
 //#define DEBUG_TRIGGER_ON       //Print information when pulling/releasing trigger
 //#define DEBUG_MAIN_LOOP_TIME   //Print elapsed time metrics for main processing loop
 //#define DEBUG_LED_PIN 13       //Flash LED pin 13 to debug USB signal detect and sleep
+//#define DEBUG_SLEEP_FOREVER    //After setup, sleeps forever.  Used for debugging RFI issues when running.
 
 #define INFO_SERIAL_INPUT_ON   //Print informational outputs (e.g. echo back commands after set)
 //#define DEBUG_SERIAL_INPUT_ON  //Print debug statments related to serial input received
@@ -94,6 +103,8 @@
 //**** program logic below this point ****
 
 #include<avr/sleep.h>
+#include<avr/wdt.h>
+#include<math.h>
 
 // https://r6500.blogspot.com/2015/01/fast-adc-on-arduino-leonardo.html
 #define ADC_TIME_104  ADCSRA=(ADCSRA&0xF80)|0x07   
@@ -110,9 +121,11 @@
 int segment[4][7];//LCD segment data stored here
 
 int measuredSpeed=0, oldSpeed=0;//converted data to speed
+int actualSpeed=0; //Speed after correction for cosine
 boolean measuredSpeedValid = false; //stores whether the speed data is valid
 int failedDecodeCount = 0; //count of invalid readings since startup
 long eTimeEndMainLoop = 0, eTimeStartMainLoop=0; //used to compute main loop elapsed time for user
+int offsetAngle = 0;
 
 //Run control options (could be adjusted later, defaults set here)
 long radiateOffTime = RADIATE_OFF_TIME;
@@ -232,6 +245,18 @@ void setup()
   scanLcd();
 
   if(Serial) Serial.println(F("Ready."));
+
+  #ifdef DEBUG_SLEEP_FOREVER
+  if(Serial)
+  {
+    Serial.println(F("Sleeping forever in 10 seconds."));
+    Serial.println(F("This should only be used for hardware debug."));
+    Serial.println(F("Hardware reset or power cycle required to wake up."));
+    Serial.flush();
+  }
+  delay(10000); //Makes it easier to re-flashy
+  sleepForever(); //For debugging the Arduino in sleep-mode
+  #endif
 }//setup
 
 
@@ -276,6 +301,10 @@ void loop()
       sDelay(radiateScanTime);
       releaseTrigger();
     }
+    else if(radiateScanTime == 0 && isRadiating())
+    {
+      releaseTrigger();
+    }
     else if(radiateScanTime == -1 && !isRadiating())
     {
       holdTrigger();
@@ -295,10 +324,14 @@ void loop()
   
     //Decode and print the speed
     decodeLcdSpeed();
-    printMeasuredSpeed();
+    printSpeed();
   
     //Wait before looping for next reading
-    sDelay(radiateOffTime);
+    //Makes no sense if radar is manual on/off to wait between scans - so skip in those cases
+    if(radiateScanTime > 0)
+    {
+      sDelay(radiateOffTime);
+    }
     
   } //if: run radar
   else //if radar is not running
@@ -422,7 +455,8 @@ void decodeLcdSpeed()
   //     2,4
   // 1,4     1,5
   //     0,5
-  measuredSpeed = decodeLcdDigit(measuredSpeedValid,segment[3][4], segment[3][5], segment[2][5], segment[2][4], segment[1][4], segment[0][5],  segment[1][5]);
+  //int decodeLcdDigit(          boolean &valid    , int topLeft  , int topCenter, int topRight , int middleCenter, int bottomLeft, int bottomCenter, int bottomRight)
+  measuredSpeed = decodeLcdDigit(measuredSpeedValid, segment[3][4], segment[3][5], segment[2][5], segment[2][4]   , segment[1][4] , segment[0][5]   ,  segment[1][5]);
 
   // TENS POSITION
   //     3,3
@@ -430,7 +464,8 @@ void decodeLcdSpeed()
   //     2,2
   // 1,2     1,3
   //     0,3
-  measuredSpeed += (10 * decodeLcdDigit(measuredSpeedValid, segment[3][2], segment[2][2], segment[2][3], segment[3][3], segment[1][2], segment[0][3], segment[1][3]) );
+  //int decodeLcdDigit(                 boolean &valid    , int topLeft  , int topCenter, int topRight , int middleCenter, int bottomLeft, int bottomCenter, int bottomRight)
+  measuredSpeed += (10 * decodeLcdDigit(measuredSpeedValid, segment[3][2], segment[3][3], segment[2][3], segment[2][2]   , segment[1][2] , segment[0][3]   , segment[1][3]) );
 
   // HUNDREDS
   //     3,1
@@ -438,7 +473,8 @@ void decodeLcdSpeed()
   //     2,0
   // 1,0     1,1
   //     0,1
-  measuredSpeed += (100 * decodeLcdDigit(measuredSpeedValid, segment[3][1], segment[3][0], segment[2][1], segment[2][0], segment[1][0], segment[0][1],  segment[1][1]) );
+  //int decodeLcdDigit(                  boolean &valid    , int topLeft  , int topCenter, int topRight , int middleCenter, int bottomLeft, int bottomCenter, int bottomRight)
+  measuredSpeed += (100 * decodeLcdDigit(measuredSpeedValid, segment[3][0], segment[3][1], segment[2][1], segment[2][0]   , segment[1][0] , segment[0][1]   ,  segment[1][1]) );
 
   if(isMph() == isKph()) //Must be one or the other; if neither or both we have bad data
   {
@@ -450,10 +486,21 @@ void decodeLcdSpeed()
   {
     failedDecodeCount++;
   }
+
+  if(offsetAngle > 0 && measuredSpeedValid)
+  {
+    //Convert degree to rad
+    double offsetAngleRad = (offsetAngle * 1000.0) / 57296.0;
+    actualSpeed=round(  ((double)measuredSpeed)/cos(offsetAngleRad)  );
+  }
+  else
+  {
+    actualSpeed=measuredSpeed;
+  }
 }
 
 //Print speed if different from previously stored
-void printMeasuredSpeed()
+void printSpeed()
 {
   if(measuredSpeedValid)
   {
@@ -462,8 +509,21 @@ void printMeasuredSpeed()
       if(Serial)
       {
         Serial.print(F("Speed "));
-        Serial.print(measuredSpeed);
-        Serial.println( isMph() ? F(" mph") : (isKph() ? F(" kph") : F(" ???")));
+        Serial.print(actualSpeed);
+        Serial.print( isMph() ? F(" mph") : (isKph() ? F(" kph") : F(" ???")));
+
+        //If angle was compensating, print raw speed too
+        if(offsetAngle > 0)
+        {
+          Serial.print(F(" (Measured "));
+          Serial.print(measuredSpeed);
+          Serial.print(F(" @ "));
+          Serial.print(offsetAngle);
+          Serial.print(F(" degrees offset)"));
+        }
+
+      //Always print newline after readings
+      Serial.println();
       }
     }
     oldSpeed = measuredSpeed;
@@ -623,7 +683,7 @@ void powerOn()
   delay(100);
   //Set it as an input to let it float
   pinMode(POWER_ON_PIN,INPUT);
-
+  delay(100);
   scanLcd();
 
   #ifdef DEBUG_ON
@@ -658,7 +718,7 @@ void powerOff()
   //Set it as an input to let it float
   pinMode(POWER_OFF_PIN,INPUT);
   //Delay for voltage to stabilize
-  delay(10);
+  delay(100);
 
   //TODO: Check power off pin voltage and wait a bit
   //Unsure why this sometimes happens
@@ -732,6 +792,18 @@ void goToSleep()
   #endif
 }
 
+#ifdef DEBUG_SLEEP_FOREVER
+//Allows forcing to sleep with no interrupt to wake - for testing only
+void sleepForever()
+{
+  sleep_enable();          // enables the sleep bit in the mcucr register
+                           // so sleep is possible. just a safety pin
+
+  sleep_mode();            // here the device is actually put to sleep!!
+                           // THE PROGRAM CONTINUES FROM HERE AFTER WAKING UP
+}
+#endif
+
 //Code run when the interrupt fires
 void doInterrupt()
 {
@@ -793,6 +865,10 @@ void printSerialCommands()
     Serial.println(F("#         [S]CAN    # : Set Radiating Scan Time (long msec)  #"));
     Serial.println(F("#                       (0)=never radiate; (-1)=always on    #"));
     Serial.println(F("#         [O]FF     # : Set Radiating Off Time  (long msec)  #"));
+    Serial.println(F("#                       NOTE: Ignored if SCAN = 1 or 0       #"));
+    Serial.println(F("#         [I]NIT   -9 : Init & Reboot (arg = -9 to confirm)  #"));
+    Serial.println(F("#         [C]ORR    # : Correction for offset angle (0-89)   #"));
+    Serial.println(F("#                       NOTE: Init causes USB re-detect      #"));
     Serial.println(F("#                                                            #"));
     Serial.println(F("##############################################################"));
   }
@@ -952,7 +1028,7 @@ void readSerialCommands()
         case 'M': //Measure - Ctrl Poll Speed Measurement (if changed)
           scanLcd();
           decodeLcdSpeed();
-          printMeasuredSpeed();  
+          printSpeed();  
           break;
           
         case 'R': //REFRESH - Poll LCD Scan and print LCD data
@@ -986,6 +1062,9 @@ void readSerialCommands()
             
             Serial.print(F("CONFIG OFF  = "));
             Serial.println(radiateOffTime);
+
+            Serial.print(F("CONFIG CORR = "));
+            Serial.println(offsetAngle);
           }
           break;
           
@@ -1049,6 +1128,42 @@ void readSerialCommands()
           }
           #endif
           break;
+
+        case 'C': //CORR - Set Correction for offset angle (0-89)
+        if(serialCommandArg >= 0 && serialCommandArg < 90)
+          {
+            offsetAngle=serialCommandArg;
+          }
+          else
+          {
+            if(Serial) Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
+          }
+
+          #ifdef INFO_SERIAL_INPUT_ON
+          if(Serial)
+          {
+            Serial.print(F("CONFIG CORR  = "));
+            Serial.println(offsetAngle);
+          }
+          #endif
+          break;
+
+        case 'I': //Init - Init & Reboot (arg = -9 to confirm)
+          if(serialCommandArg >= -9)
+          {
+            if(Serial) Serial.println(F("CONFIG INIT - Initializing and rebooting, please wait . . ."));
+            reboot();
+          }
+          else
+          {
+            if(Serial)
+            {
+              Serial.print(F("CONFIG INIT - Ignore.  Confirmation got "));
+              Serial.print(serialCommandArg);
+              Serial.println(F(" but expecting -9."));
+              Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
+            }
+          }
           
         default:
           if(Serial) Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
@@ -1078,6 +1193,14 @@ void sDelay(int ms)
   //if there was some small <SDELAY_MS ms left, wait that amount now.
   if(ms > 0)
     delay(ms);
+}
+
+
+//Reboot to reinitialize defaults
+void reboot() {
+  wdt_disable();
+  wdt_enable(WDTO_15MS);
+  while (1) {}
 }
 
 //debug flashing LED pin
