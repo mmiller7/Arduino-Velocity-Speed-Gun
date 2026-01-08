@@ -8,7 +8,7 @@ This project is based on the work documented in [Kevin Darrah Wiki](https://www.
 * Bushnell 101911 Velocity Speed Gun
 * Arduino Micro (or other small ATMEGA32U4 board).  NOTE - many cheap clones don't break out all 12 analog inputs!
 * USB surface mount port (if USB-C, needs resistors for PD compatibility)
-* USB cable to cut and splice between Arduino and other componenta
+* USB cable to cut and splice between Arduino and other components
 * 5V SPDT relay
 * 1x diode (any switching or rectifier diode)
 * 5V to 3.3V regulator board
