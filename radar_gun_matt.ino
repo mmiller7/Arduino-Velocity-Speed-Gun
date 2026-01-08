@@ -6,6 +6,11 @@
 /*
  * Initial version
  *   Created initial version
+ * v2
+ *   Optimized readability
+ *   Added serial command processing
+ *   Optimized LCD digit decoding (NOTE - this version may have decoding bug in parameter order
+ *   Improved preprocessor directives for debugging
  */
 
 
@@ -15,9 +20,11 @@
 //#define DEBUG_CONTROLS_ON      //Run test of button actions during startup
 //#define DEBUG_LED_PIN 13       //Flash LED pin 13 to debug USB signal detect and sleep
 //#define DEBUG_TRIGGER_ON       //Print information when pulling/releasing trigger
+#define INFO_SERIAL_INPUT_ON   //Print informational outputs (e.g. echo back commands after set)
+//#define DEBUG_SERIAL_INPUT_ON  //Print debug statments related to serial input received
 
-#define RADIATE_OFF_DELAY 5000 //mS delay idle between pricessing loop iterations
-#define RADIATE_DURATION 1000  //mS duration of radar active scan; (0)=never radiate; (-1)=always on
+#define RADIATE_OFF_TIME 5000 //mS delay idle between pricessing loop iterations
+#define RADIATE_SCAN_TIME 1000  //mS duration of radar active scan; (0)=never radiate; (-1)=always on
 #define LCD_SCAN_DELAY 10   //mS delay for LCD to stabilize before reading
 #define LCD_SCAN_TIME 20    //mS duration to keep scanning LCD for active segments
 
@@ -95,8 +102,13 @@
 int segment[4][7];//LCD segment data stored here
 
 int measuredSpeed, oldSpeed;//converted data to speed
-boolean measuredSpeedValid = false;
-int failedDecodeCount = 0;
+boolean measuredSpeedValid = false; //stores whether the speed data is valid
+int failedDecodeCount = 0; //count of invalid readings since startup
+
+//Run control options (could be adjusted later, defaults set here)
+long radiateOffTime = RADIATE_OFF_TIME;
+long radiateScanTime = RADIATE_SCAN_TIME;
+boolean autoRunRadar = true;
 
 
 
@@ -219,46 +231,59 @@ void loop()
     //Put to deep sleep
     goToSleep();
   }
+
+  //Check if any new commands have been sent
+  readSerialCommands();
+
+  //Decide if we are running the radar or not
+  if(autoRunRadar)
+  {
+    if(!isPowerOn())
+    {
+      powerOn();
+    }
   
-  if(!isPowerOn())
+    //Pull the trigger to search for a target
+    if(radiateScanTime > 0)
+    {
+      holdTrigger();
+      sDelay(radiateScanTime);
+      releaseTrigger();
+    }
+    else if(radiateScanTime == -1 && !isRadiating())
+    {
+      holdTrigger();
+    }
+  
+    //The releaseTrigger already scans the LCD, no need to do it again
+    //but if the radiateScanTime is 0 or -1 special cases we need to
+    if(radiateScanTime < 1)
+    {
+      scanLcd();
+    }
+  
+    #ifdef INFO_ON
+    if(isBatteryLow())
+      if(Serial) Serial.println("Low Battery");
+    #endif
+  
+    //Decode and print the speed
+    decodeLcdSpeed();
+    printMeasuredSpeed();
+  
+    //Wait before looping for next reading
+    sDelay(radiateOffTime);
+    
+  } //if: run radar
+  else //if radar is not running
   {
-    powerOn();
-  }
-
-  //Pull the trigger to search for a target
-  if(RADIATE_DURATION > 0)
-  {
-    holdTrigger();
-    delay(RADIATE_DURATION);
-    releaseTrigger();
-  }
-  else if(RADIATE_DURATION == -1 && !isRadiating())
-  {
-    holdTrigger();
-  }
-
-  //The releaseTrigger already scans the LCD, no need to do it again
-  //but if the RADIATE_DURATION is 0 or -1 special cases we need to
-  if(RADIATE_DURATION < 1)
-  {
-    scanLcd();
-  }
-
-  #ifdef INFO_ON
-  if(isBatteryLow())
-    if(Serial) Serial.println("Low Battery");
-  #endif
-
-  //Decode and print the speed
-  decodeLcdSpeed();
-  printLcdSpeed();
-
-  //Wait before looping for next reading
-  delay(RADIATE_OFF_DELAY);
+    //TODO: If its not running
+  } //if-else: if radar is not running
 }
 
 
 
+//Scans the LCD segments and updates stored matrix states
 void scanLcd()
 {  
   clearLcd();
@@ -286,167 +311,109 @@ void scanLcd()
   } //while: jump in and scan the LCD!
 }
 
+
+
+//Decodes an LED segment, returning the value
+//The "valid" parameter should be set to true at start of first digit and passed unchanged to subsequent decodes
+//Updates "valid" parameter to false and returns 0 on invalid data
+//Blank is assumed to be a valid numeric zero
+int decodeLcdDigit(boolean &valid, int topLeft, int topCenter, int topRight, int middleCenter, int bottomLeft, int bottomCenter, int bottomRight)
+{
+  if (topLeft == 0 && topCenter == 0 && topRight == 0 && middleCenter == 0 && bottomLeft == 0 && bottomCenter == 0 && bottomRight == 0)
+  {
+    return 0; //blank digit is 0
+  }
+  else if (topLeft == 1 && topCenter == 1 && topRight == 1 && middleCenter == 0 && bottomLeft == 1 && bottomCenter == 1 && bottomRight == 1)
+  {
+    return 0;
+  }
+  else if (topLeft == 0 && topCenter == 0 && topRight == 1 && middleCenter == 0 && bottomLeft == 0 && bottomCenter == 0 && bottomRight == 1)
+  {
+    return 1;
+  }
+  else if (topLeft == 0 && topCenter == 1 && topRight == 1 && middleCenter == 1 && bottomLeft == 1 && bottomCenter == 1 && bottomRight == 0)
+  {
+    return 2;
+  }
+  else if (topLeft == 0 && topCenter == 1 && topRight == 1 && middleCenter == 1 && bottomLeft == 0 && bottomCenter == 1 && bottomRight == 1)
+  {
+    return 3;
+  }
+  else if (topLeft == 1 && topCenter == 0 && topRight == 1 && middleCenter == 1 && bottomLeft == 0 && bottomCenter == 0 && bottomRight == 1)
+  {
+    return 4;
+  }
+  else if (topLeft == 1 && topCenter == 1 && topRight == 0 && middleCenter == 1 && bottomLeft == 0 && bottomCenter == 1 && bottomRight == 1)
+  {
+    return 5;
+  }
+  else if (topLeft == 1 && topCenter == 1 && topRight == 0 && middleCenter == 1 && bottomLeft == 1 && bottomCenter == 1 && bottomRight == 1)
+  {
+    return 6;
+  }
+  else if (topLeft == 0 && topCenter == 1 && topRight == 1 && middleCenter == 0 && bottomLeft == 0 && bottomCenter == 0 && bottomRight == 1)
+  {
+    return 7;
+  }
+  else if (topLeft == 1 && topCenter == 1 && topRight == 1 && middleCenter == 1 && bottomLeft == 1 && bottomCenter == 1 && bottomRight == 1)
+  {
+    return 8;
+  }
+  else if (topLeft == 1 && topCenter == 1 && topRight == 1 && middleCenter == 1 && bottomLeft == 0 && bottomCenter == 1 && bottomRight == 1)
+  {
+    return 9;
+  }
+  else   //Should never happen - means an invalid combination of segments were turned on
+  {
+    valid = false;
+    return 0;
+  }
+}
+
+//Decode the LCD matrix into speed integer
 void decodeLcdSpeed()
 {
   measuredSpeed = 0;//clear the speed, and we'll set it now based on the segment data
   measuredSpeedValid = true; //assume we will be successful
 
-  /*
-   *  ONES POSITION
-   */
-
+  // ONES POSITION
   //     3,5
   // 3,4     2,5
   //     2,4
   // 1,4     1,5
   //     0,5
+  measuredSpeed = decodeLcdDigit(measuredSpeedValid,segment[3][4], segment[3][5], segment[2][5], segment[2][4], segment[1][4], segment[0][5],  segment[1][5]);
 
-  //Zero - Ones
-  if (segment[3][4] == 1 && segment[3][5] == 1 && segment[2][5] == 1 && segment[2][4] == 0 && segment[1][4] == 1 && segment[1][5] == 1 && segment[0][5] == 1) {
-    measuredSpeed = 0;
-  }
-  //One - Ones
-  else if (segment[3][4] == 0 && segment[3][5] == 0 && segment[2][5] == 1 && segment[2][4] == 0 && segment[1][4] == 0 && segment[1][5] == 1 && segment[0][5] == 0) {
-    measuredSpeed = 1;
-  }
-  //Two - Ones
-  else if (segment[3][4] == 0 && segment[3][5] == 1 && segment[2][5] == 1 && segment[2][4] == 1 && segment[1][4] == 1 && segment[1][5] == 0 && segment[0][5] == 1) {
-    measuredSpeed = 2;
-  }
-  //Three - Ones
-  else if (segment[3][4] == 0 && segment[3][5] == 1 && segment[2][5] == 1 && segment[2][4] == 1 && segment[1][4] == 0 && segment[1][5] == 1 && segment[0][5] == 1) {
-    measuredSpeed = 3;
-  }
-  //Four - Ones
-  else if (segment[3][4] == 1 && segment[3][5] == 0 && segment[2][5] == 1 && segment[2][4] == 1 && segment[1][4] == 0 && segment[1][5] == 1 && segment[0][5] == 0) {
-    measuredSpeed = 4;
-  }
-  //Five - Ones
-  else if (segment[3][4] == 1 && segment[3][5] == 1 && segment[2][5] == 0 && segment[2][4] == 1 && segment[1][4] == 0 && segment[1][5] == 1 && segment[0][5] == 1) {
-    measuredSpeed = 5;
-  }
-  //Six - Ones
-  else if (segment[3][4] == 1 && segment[3][5] == 1 && segment[2][5] == 0 && segment[2][4] == 1 && segment[1][4] == 1 && segment[1][5] == 1 && segment[0][5] == 1) {
-    measuredSpeed = 6;
-  }
-  //Seven - Ones
-  else if (segment[3][4] == 0 && segment[3][5] == 1 && segment[2][5] == 1 && segment[2][4] == 0 && segment[1][4] == 0 && segment[1][5] == 1 && segment[0][5] == 0) {
-    measuredSpeed = 7;
-  }
-  //Eight - Ones
-  else if (segment[3][4] == 1 && segment[3][5] == 1 && segment[2][5] == 1 && segment[2][4] == 1 && segment[1][4] == 1 && segment[1][5] == 1 && segment[0][5] == 1) {
-    measuredSpeed = 8;
-  }
-  //Nine - Ones
-  else if (segment[3][4] == 1 && segment[3][5] == 1 && segment[2][5] == 1 && segment[2][4] == 1 && segment[1][4] == 0 && segment[1][5] == 1 && segment[0][5] == 1) {
-    measuredSpeed = 9;
-  }
-  //Blank - Ones
-  else if (segment[3][4] == 0 && segment[3][5] == 0 && segment[2][5] == 0 && segment[2][4] == 0 && segment[1][4] == 0 && segment[1][5] == 0 && segment[0][5] == 0) {
-    measuredSpeed = 0;
-  }
-  //Should never happen - means an invalid combination of segments were turned on
-  else
-  {
-    measuredSpeedValid = false;
-    failedDecodeCount++;
-    return;
-  }
-
-
-/*
- * TENS POSITION
- */
+  // TENS POSITION
   //     3,3
   // 3,2     2,3
   //     2,2
   // 1,2     1,3
   //     0,3
+  measuredSpeed += (10 * decodeLcdDigit(measuredSpeedValid, segment[3][2], segment[2][2], segment[2][3], segment[3][3], segment[1][2], segment[0][3], segment[1][3]) );
 
-  //One - Tens
-  if (segment[3][2] == 0 && segment[2][2] == 0 && segment[2][3] == 1 && segment[3][3] == 0 && segment[1][2] == 0 && segment[1][3] == 1 && segment[0][3] == 0) {
-    measuredSpeed = measuredSpeed + (1 * 10);
-  }
-  //Two - Tens
-  else if (segment[3][2] == 0 && segment[2][2] == 1 && segment[2][3] == 1 && segment[3][3] == 1 && segment[1][2] == 1 && segment[1][3] == 0 && segment[0][3] == 1) {
-    measuredSpeed = measuredSpeed + (2 * 10);
-  }
-  //Three - Tens
-  else if (segment[3][2] == 0 && segment[2][2] == 1 && segment[2][3] == 1 && segment[3][3] == 1 && segment[1][2] == 0 && segment[1][3] == 1 && segment[0][3] == 1) {
-    measuredSpeed = measuredSpeed + (3 * 10);
-  }
-  //Four - Tens
-  else if (segment[3][2] == 1 && segment[2][2] == 1 && segment[2][3] == 1 && segment[3][3] == 0 && segment[1][2] == 0 && segment[1][3] == 1 && segment[0][3] == 0) {
-    measuredSpeed = measuredSpeed + (4 * 10);
-  }
-  //Five - Tens
-  else if (segment[3][2] == 1 && segment[2][2] == 1 && segment[2][3] == 0 && segment[3][3] == 1 && segment[1][2] == 0 && segment[1][3] == 1 && segment[0][3] == 1) {
-    measuredSpeed = measuredSpeed + (5 * 10);
-  }
-  //Six - Tens
-  else if (segment[3][2] == 1 && segment[2][2] == 1 && segment[2][3] == 0 && segment[3][3] == 1 && segment[1][2] == 1 && segment[1][3] == 1 && segment[0][3] == 1) {
-    measuredSpeed = measuredSpeed + (6 * 10);
-  }
-  //Seven - Tens
-  else if (segment[3][2] == 0 && segment[2][2] == 0 && segment[2][3] == 1 && segment[3][3] == 1 && segment[1][2] == 0 && segment[1][3] == 1 && segment[0][3] == 0) {
-    measuredSpeed = measuredSpeed + (7 * 10);
-  }
-  //Eight - Tens
-  else if (segment[3][2] == 1 && segment[2][2] == 1 && segment[2][3] == 1 && segment[3][3] == 1 && segment[1][2] == 1 && segment[1][3] == 1 && segment[0][3] == 1) {
-    measuredSpeed = measuredSpeed + (8 * 10);
-  }
-  //Nine - Tens
-  else if (segment[3][2] == 1 && segment[2][2] == 1 && segment[2][3] == 1 && segment[3][3] == 1 && segment[1][2] == 0 && segment[1][3] == 1 && segment[0][3] == 1) {
-    measuredSpeed = measuredSpeed + (9 * 10);
-  }
-  //Blank - Tens
-  else if (segment[3][2] == 0 && segment[2][2] == 0 && segment[2][3] == 0 && segment[3][3] == 0 && segment[1][2] == 0 && segment[1][3] == 0 && segment[0][3] == 0) {
-    //no-op
-  }
-  //Should never happen - means an invalid combination of segments were turned on
-  else
-  {
-    measuredSpeedValid = false;
-    failedDecodeCount++;
-    return;
-  }
-
-/*
- * HUNDREDS
- */
+  // HUNDREDS
   //     3,1
   // 3,0     2,1
   //     2,0
   // 1,0     1,1
   //     0,1
-  //One - Hundreds
-  if (segment[3][1] == 0 && segment[3][0] == 0 && segment[2][1] == 1 && segment[2][0] == 0 && segment[1][0] == 0 && segment[1][1] == 1 && segment[0][1] == 0) {
-    measuredSpeed = measuredSpeed + (1 * 100);
-  }
-  else if (segment[3][1] == 1 && segment[3][0] == 0 && segment[2][1] == 1 && segment[2][0] == 1 && segment[1][0] == 1 && segment[1][1] == 0 && segment[0][1] == 1) {
-    measuredSpeed = measuredSpeed + (2 * 100);
-  }
-  //Blank - Hundreds
-  else if (segment[3][1] == 0 && segment[3][0] == 0 && segment[2][1] == 0 && segment[2][0] == 0 && segment[1][0] == 0 && segment[1][1] == 0 && segment[0][1] == 0) {
-  //no-op
-  }
-  //Should never happen - means an invalid combination of segments were turned on
-  else
+  measuredSpeed += (100 * decodeLcdDigit(measuredSpeedValid, segment[3][1], segment[3][0], segment[2][1], segment[2][0], segment[1][0], segment[0][1],  segment[1][1]) );
+
+  if(isMph() == isKph()) //Must be one or the other; if neither or both we have bad data
   {
     measuredSpeedValid = false;
-    failedDecodeCount++;
-    return;
   }
 
-  if((!isMph() && !isKph()) || (isMph() && isKph())) //Must be one or the other; if neither or both we have bad data
+  //Should never happen - means an invalid combination of segments were turned on
+  if(!measuredSpeedValid)
   {
-    measuredSpeedValid = false;
     failedDecodeCount++;
-    return;
   }
 }
 
-void printLcdSpeed()
+//Print speed if different from previously stored
+void printMeasuredSpeed()
 {
   if(measuredSpeedValid)
   {
@@ -475,6 +442,7 @@ void printLcdSpeed()
   #endif
 }
 
+//Clear the LCD matrix
 void clearLcd()
 {
   for (int i = 0; i < 4; i++) {//for degugging and clearing segment data
@@ -489,19 +457,25 @@ void clearLcd()
   }
 }
 
+//Debugging - print out the detected LCD segments raw
 void dumpLcd()
 {
-  /*
-  for (int i = 0; i < 4; i++) {//for degugging and clearing segment data
+  #ifdef DEBUG_ON
+  for (int i = 0; i < 4; i++)
+  {
     if(Serial) Serial.print(i);
     if(Serial) Serial.print(": ");
-    for (int j = 0; j < 7; j++) {
+    for (int j = 0; j < 7; j++)
+    {
       if(Serial) Serial.print(segment[i][j]);
-      if(Serial) Serial.print(",");
+      if(j < 6)
+      {
+        if(Serial) Serial.print(",");
+      }
     }
-    if(Serial) Serial.println("  ");
+    if(Serial) Serial.println();
   }
-*/
+  #endif
 
 /*                /*              /*
  * HUNDREDS        * TENS POSITION *  ONES POSITION
@@ -534,6 +508,7 @@ void dumpLcd()
   }
 }
 
+//Returns whether the LCD test passed (all segments on)
 boolean verifyLcdTest()
 {
   int sum=0;
@@ -580,11 +555,13 @@ boolean isRadiating()
   return segment[3][6];
 }
 
+//Is the power source USB
 boolean isUsbPower()
 {
   return !digitalRead(USB_POWER_PIN);
 }
 
+//Is the radar on (based on LCD Data)
 boolean isPowerOn()
 {
   scanLcd();
@@ -592,6 +569,7 @@ boolean isPowerOn()
   return isKph() || isMph();
 }
 
+//Send command to radar
 void powerOn()
 {
   #ifdef INFO_ON
@@ -625,6 +603,7 @@ void powerOn()
   #endif
 }
 
+//Send command to radar
 void powerOff()
 {
   #ifdef INFO_ON
@@ -652,6 +631,7 @@ void powerOff()
   #endif
 }
 
+//Send command to radar
 void holdTrigger()
 {
   #ifdef DEBUG_TRIGGER_ON
@@ -669,6 +649,7 @@ void holdTrigger()
   #endif
 }
 
+//Send command to radar
 void releaseTrigger()
 {
   #ifdef DEBUG_TRIGGER_ON
@@ -686,7 +667,7 @@ void releaseTrigger()
   #endif
 }
 
-//put board to sleep mode
+//put Arduino board to sleep mode
 void goToSleep()
 {
   #ifdef DEBUG_LED_PIN
@@ -737,6 +718,316 @@ void enableInterrupt()
     attachInterrupt(digitalPinToInterrupt(USB_POWER_PIN), doInterrupt, LOW);
     interruptEnabled=true;
   }
+}
+
+//print expected serial command syntax
+void printSerialCommands()
+{
+  if(Serial)
+  {
+    //                    NOTE - First letter of command must be unique
+    //                           because it is used for switch statment
+    Serial.println(F("##############################################################"));
+    Serial.println(F("#                                                            #"));
+    Serial.println(F("#         [CMD]    ARG Action                                #"));
+    Serial.println(F("#         -------- --- ------------------------------------  #"));
+    Serial.println(F("#  Info                                                      #"));
+    Serial.println(F("#         [H]ELP      : Help Menu (this menu)                #"));
+    Serial.println(F("#  Action                                                    #"));
+    Serial.println(F("#         [T]RIG    # : Ctrl Trigger       1=Hold 0=Release  #"));
+    Serial.println(F("#         [P]OWER   # : Ctrl Power Button  1=On   0=Off      #"));
+    Serial.println(F("#         [M]EASURE   : Poll Speed Measurement (if changed)  #"));
+    Serial.println(F("#         [R]EFRESH   : Poll LCD Scan and print LCD data     #"));
+    Serial.println(F("#                       Note: This prints in code style      #"));
+    Serial.println(F("#                       Example: (-1 speed = invalid)        #"));
+    Serial.println(F("#                         isPowerOn=1                        #"));
+    Serial.println(F("#                         isBatteryLow=0                     #"));
+    Serial.println(F("#                         isMph=1                            #"));
+    Serial.println(F("#                         isKph=0                            #"));
+    Serial.println(F("#                         isRadiating=0                      #"));
+    Serial.println(F("#                         measuredSpeed=0                    #"));
+    Serial.println(F("#  Config                                                    #"));
+    Serial.println(F("#         [G]ET       : Print current config values          #"));
+    Serial.println(F("#         [A]UTO    # : Radar auto-processing 1=On 0=Off     #"));
+    Serial.println(F("#         [S]CAN    # : Set Radiating Scan Time (long msec)  #"));
+    Serial.println(F("#                       (0)=never radiate; (-1)=always on    #"));
+    Serial.println(F("#         [O]FF     # : Set Radiating Off Time  (long msec)  #"));
+    Serial.println(F("#                                                            #"));
+    Serial.println(F("##############################################################"));
+  }
+}
+
+//read and process incoming serial commands
+void readSerialCommands()
+{
+  if(Serial.available())
+  {
+    // Read until newline
+    String input = Serial.readStringUntil('\n');
+
+    //Convert to upper-case (we don't want case-sensitive)
+    input.toUpperCase();
+
+    #ifdef DEBUG_SERIAL_INPUT_ON
+    if(Serial)
+    {
+      Serial.print("Input: \"");
+      Serial.print(input);
+      Serial.println("\"");
+    }
+    #endif
+
+    //If we got non-zero input, process it
+    if(input.length() > 0)
+    {
+      //Extract first characater (command key)
+      char serialCommand = input[0];
+
+      //Storage for numeric argument (-999 is invalid)
+      long serialCommandArg = -999;
+
+      //Search for numeric arguments
+      int searchIndex = 0;
+      int scalor = 1; //positive/negative scalor
+      while(searchIndex < input.length() && (input[searchIndex] < '0' || input[searchIndex] > '9'))
+      {
+        #ifdef DEBUG_SERIAL_INPUT_ON
+        if(Serial)
+        {
+            Serial.print("L1 searchIndex=");
+            Serial.println(searchIndex);
+        }
+        #endif
+        
+        searchIndex++;
+      }
+
+      //Check if its negative
+      if(searchIndex > 0 && input[searchIndex-1] == '-')
+      {
+        scalor = -1;
+
+        #ifdef DEBUG_SERIAL_INPUT_ON
+        if(Serial)
+        {
+            Serial.print("Found negative '-' char ");
+            Serial.println(searchIndex);
+        }
+        #endif
+      }
+
+      //Extract numeric value
+      while(searchIndex < input.length() && (input[searchIndex] >= '0' && input[searchIndex] <= '9'))
+      {
+        if(serialCommandArg == -999)
+        {
+          serialCommandArg=0;            //Set to zero if first valid value
+        }
+
+        serialCommandArg*=10;             //Shift place value
+        serialCommandArg+=(input[searchIndex]-'0'); //Add digit
+
+        #ifdef DEBUG_SERIAL_INPUT_ON
+        if(Serial)
+        {
+            Serial.print("L2 searchIndex=");
+            Serial.println(searchIndex);
+        }
+        #endif
+
+        searchIndex++;
+      }
+
+      //Make negative if applicable
+      serialCommandArg*=scalor;
+
+      #ifdef DEBUG_SERIAL_INPUT_ON
+      if(Serial)
+      {
+          Serial.print("Decoded serialCommandArg=");
+          Serial.println(serialCommandArg);
+      }
+      #endif
+
+      switch (serialCommand)
+      {
+        case 'H': //HELP - Help Menu
+          printSerialCommands();
+          break;
+          
+        case 'T': //TRIG # - Ctrl Trigger 1=Hold 0=Release
+          if(serialCommandArg == 1)
+          {
+            holdTrigger();
+          }
+          else if(serialCommandArg == 0)
+          {
+            releaseTrigger();
+          }
+          else
+          {
+            if(Serial) Serial.println("ERROR: Invalid command.  Try \"HELP\"");
+          }
+
+          #ifdef INFO_SERIAL_INPUT_ON
+          if(Serial)
+          {
+            Serial.print("ACTION TRIG = ");
+            Serial.println(isRadiating());
+          }
+          break;
+          #endif
+          
+        case 'P': //POWER # - Ctrl Power Button 1=On   0=Off
+          if(serialCommandArg == 1)
+          {
+            if(!isPowerOn())
+              powerOn();
+          }
+          else if(serialCommandArg == 0)
+          {
+            if(isPowerOn())
+              powerOff();
+          }
+          else
+          {
+            if(Serial) Serial.println("ERROR: Invalid command.  Try \"HELP\"");
+          }
+
+          #ifdef INFO_SERIAL_INPUT_ON
+          Serial.print("ACTION POWER = ");
+          Serial.println(isPowerOn());
+          break;
+          #endif
+          
+        case 'M': //Measure - Ctrl Poll Speed Measurement (if changed)
+          decodeLcdSpeed();
+          printMeasuredSpeed();  
+          break;
+          
+        case 'R': //REFRESH - Poll LCD Scan and print LCD data
+          decodeLcdSpeed();
+
+          if(Serial)
+          {
+            Serial.print("isPowerOn=");
+            Serial.println(isPowerOn());
+            Serial.print("isBatteryLow=");
+            Serial.println(isBatteryLow());
+            Serial.print("isMph=");
+            Serial.println(isMph());
+            Serial.print("isKph=");
+            Serial.println(isKph());
+            Serial.print("isRadiating=");
+            Serial.println(isRadiating());
+            Serial.print("measuredSpeed=");
+            Serial.println(measuredSpeedValid ? measuredSpeed : -1);
+          }
+          break;
+          
+        case 'G': //GET - Print current config values
+          if(Serial)
+          {
+            Serial.print("CONFIG AUTO = ");
+            Serial.println(autoRunRadar);
+            
+            Serial.print("CONFIG SCAN = ");
+            Serial.println(radiateScanTime);
+            
+            Serial.print("CONFIG OFF  = ");
+            Serial.println(radiateOffTime);
+          }
+          break;
+          
+        case 'A': //AUTO - Radar auto-processing 1=On 0=Off
+          if(serialCommandArg == 1)
+          {
+            autoRunRadar=1;
+          }
+          else if(serialCommandArg == 0)
+          {
+            autoRunRadar=0;
+          }
+          else
+          {
+            if(Serial) Serial.println("ERROR: Invalid command.  Try \"HELP\"");
+          }
+
+          #ifdef INFO_SERIAL_INPUT_ON
+          if(Serial)
+          {
+            Serial.print("CONFIG AUTO = ");
+            Serial.println(autoRunRadar);
+          }
+          #endif
+          break;
+          
+        case 'S': //SCAN - Set Radiating Scan Time (long msec) (0)=never radiate; (-1)=always on
+          if(serialCommandArg >= -1)
+          {
+            radiateScanTime=serialCommandArg;
+          }
+          else
+          {
+            if(Serial) Serial.println("ERROR: Invalid command.  Try \"HELP\"");
+          }
+
+          #ifdef INFO_SERIAL_INPUT_ON
+          if(Serial)
+          {
+            Serial.print("CONFIG SCAN = ");
+            Serial.println(radiateScanTime);
+          }
+          #endif
+          break;
+          
+        case 'O': //OFF - Set Radiating Off Time  (long msec)
+          if(serialCommandArg >= 0)
+          {
+            radiateOffTime=serialCommandArg;
+          }
+          else
+          {
+            if(Serial) Serial.println("ERROR: Invalid command.  Try \"HELP\"");
+          }
+
+          #ifdef INFO_SERIAL_INPUT_ON
+          if(Serial)
+          {
+            Serial.print("CONFIG OFF  = ");
+            Serial.println(radiateOffTime);
+          }
+          #endif
+          break;
+          
+        default:
+          if(Serial) Serial.println("ERROR: Invalid command.  Try \"HELP\"");
+          break;
+          
+      } //switch/case
+    } //if: input length >1
+  }//if: serial
+}
+
+//serial input friendly delay...monitors for serial commands faster
+#define SDELAY_MS 250
+void sDelay(int ms)
+{
+  //do tiny delays of 20ms until we are waiting less than that
+  while(ms > SDELAY_MS)
+  {
+    //Time and run readSerialCommands
+    long eTime=millis();
+    readSerialCommands();
+    eTime = millis()-eTime;
+
+    //Wait remainder of SDELAY_MS
+    ms-=(SDELAY_MS-eTime);
+    delay(SDELAY_MS-eTime);
+  }
+  //if there was some small <SDELAY_MS ms left, wait that amount now.
+  if(ms > 0)
+    delay(ms);
 }
 
 //debug flashing LED pin
