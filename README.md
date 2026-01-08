@@ -11,7 +11,7 @@ This project is based on the work documented in [Kevin Darrah Wiki](https://www.
 * USB cable to cut and splice between Arduino and other componenta
 * 5V SPDT relay
 * 1x diode (any switching or rectifier diode)
-* 5V -> 3.3V regulator board
+* 5V to 3.3V regulator board
 * ~2-3V to 5V boost regulator board
 * 2x 10 ohm 1/2 watt resistors
 * 2x 1K ohm 1/4 watt resistors
