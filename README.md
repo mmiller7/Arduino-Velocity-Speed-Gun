@@ -68,4 +68,4 @@ The [firmware for the arduino](radar_gun_matt.ino) bridges the radar gun control
 
 I have also created a couple very simple bash scripts that let me log speeds to tab-separated format (which MS Excel can open) and do very simple analysis summary of the speed readings file in a terminal, as well as included some simple example output files.  These are located in the [scripts](scripts) directory.
 
-I chose to use a Raspberry Pi Zero to run the bash scripts since its compact and low power so I can run the entire device with logging and remote WiFi access off a portable USB battery pack.
+I chose to use a Raspberry Pi Zero 2 W to run the bash scripts since its compact and low power so I can run the entire device with logging and remote WiFi access off a portable USB battery pack.  It could also be modified to do nifty things like control a camera to build a radar speed camera or possibly run LPR software.
