@@ -1,7 +1,7 @@
-//Matthew Miller
-//Dec 2025
-//Based on project from Kevin Darrah - http://www.kevindarrah.com/wiki/index.php?title=Arduino_Radar_Gun
-//NOTE - SET BOARD TYPE "Arduino Micro" for Leonardo Micro board or TX/RX LEDs will be stuck on!
+// Matthew Miller
+// Dec 2025
+// Based on project from Kevin Darrah - http://www.kevindarrah.com/wiki/index.php?title=Arduino_Radar_Gun
+// NOTE - SET BOARD TYPE "Arduino Micro" for Leonardo Micro board or TX/RX LEDs will be stuck on!
 
 /*
  * Initial version
@@ -33,39 +33,60 @@
  *   Improved power button press logic
  *   Fixed bug in serial read logic due to misplaced breaks in case statments
  *   Fixed bug in sDelay causing unexpected results if a long operation resulted in negative delay
+ * v6
+ *   Improved readability
+ *   Added dynamic timing to main loop to more accurately process scan/off time values
+ *   Added option to always print first scan speed reading even if it is a duplicate of previous reading
+ *   Added option to supress printing zero-speed values
+ *   Optimized MPH/KPH unit selection function calls 
+ *   Optimized some serial command processing
  */
 
 
 
-#define INFO_ON                //Print informational outputs (e.g. sent power commands, low battery)
-//#define DEBUG_ON               //Print debug statments
-//#define DEBUG_CONTROLS_ON      //Run test of button actions during startup
-//#define DEBUG_TRIGGER_ON       //Print information when pulling/releasing trigger
-//#define DEBUG_PBUTTON_ON       //Print information when pulling/releasing power button
-//#define DEBUG_MAIN_LOOP_TIME   //Print elapsed time metrics for main processing loop
-//#define DEBUG_LED_PIN 13       //Flash LED pin 13 to debug USB signal detect and sleep
-//#define DEBUG_SLEEP_FOREVER    //After setup, sleeps forever.  Used for debugging RFI issues when running.
-//#define DEBUG_NEVER_SLEEP      //Ignore sleep commands.  Used for debugging without pins connected.
+// OUTPUT AND PROCESSING DEBUG OPTIONS
+//WARNING - enabling extra debugging may affect timings
+#define INFO_ON                // Print informational outputs (e.g. sent power commands, low battery)
+//#define DEBUG_ON               // Print debug statments
+//#define DEBUG_INVALID_LCD   // Prints information if LCD decode was invalid
+//#define DEBUG_CONTROLS_ON      // Run test of button actions during startup
+//#define DEBUG_TRIGGER_ON       // Print information when pulling/releasing trigger
+//#define DEBUG_PBUTTON_ON       // Print information when pulling/releasing power button
+//#define DEBUG_MAIN_LOOP_TIME   // Print elapsed time metrics for main processing loop
+//#define DEBUG_SDELAY           // Print debug statments for sDelay calls
+//#define DEBUG_SCAN_OFF_DELAY   // Print debug statments for scan and off timing
+//#define DEBUG_LED_PIN 13       // Flash LED pin 13 to debug USB signal detect and sleep
+//#define DEBUG_SLEEP_FOREVER    // After setup, sleeps forever.  Used for debugging RFI issues when running.
+//#define DEBUG_NEVER_SLEEP      // Ignore sleep commands.  Used for debugging without pins connected.
 
-#define INFO_SERIAL_INPUT_ON   //Print informational outputs (e.g. echo back commands after set)
-//#define DEBUG_SERIAL_INPUT_ON  //Print debug statments related to serial input received
+// INPUT DEBUG OPTIONS
+#define INFO_SERIAL_INPUT_ON   // Print informational outputs (e.g. echo back commands after set)
+//#define DEBUG_SERIAL_INPUT_ON  // Print debug statments related to serial input received
 
-#define RADIATE_OFF_TIME 5000 //mS delay idle between pricessing loop iterations
-#define RADIATE_SCAN_TIME 1000  //mS duration of radar active scan; (0)=never radiate; (-1)=always on
-#define LCD_SCAN_DELAY 10   //mS delay for LCD to stabilize before reading
-#define LCD_SCAN_TIME 20    //mS duration to keep scanning LCD for active segments
+// DEFAULT VARIABLE CONFIGURATION OPTIONS
+//      RADIATE suggested times - 125/375 (half-second loop) or 250/775 (one-second loop)
+//                                NOTE minimum time must be greater than (LCD_SCAN_DELAY + LCD_SCAN_TIME)
+#define RADIATE_SCAN_TIME 125   // mS duration of radar active scan; (0)=never radiate; (-1)=always on
+#define RADIATE_OFF_TIME  375   // mS delay idle between pricessing loop iterations
+#define AUTO_RUN_RADAR    true  // true - start/stop radar automatically; false - control only by serial
+#define PRINT_ZERO_SPEED  false // true - print speed values of zero; false - print only values >0
+#define PRINT_FIRST_SPEED true  // true - print first scan after trigger pulled even if duplicate
+
+// CONTROL OPTIONS
+#define LCD_SCAN_DELAY 10   // mS delay for LCD to stabilize before reading
+#define LCD_SCAN_TIME  20   // mS duration to keep scanning LCD for active segments
 
 // Control pins
 // Pull output and pull low to activate
 // Set input and low (no pull-up) to deactivate
-#define TRIGGER_PIN   2  //Digital Pin
-#define POWER_ON_PIN  3  //Digital Pin
-#define POWER_OFF_PIN 12 //Digital Pin
-#define POWER_OFF_SENSE_PIN 11 //Analog Pin
-//Note - D12 is also an analog input so we can "wait a bit" after power-down for the voltage to bleed off or it gets stuck
+#define TRIGGER_PIN   2  // Digital Pin
+#define POWER_ON_PIN  3  // Digital Pin
+#define POWER_OFF_PIN 12 // Digital Pin
+#define POWER_OFF_SENSE_PIN 11 // Analog Pin
+// Note - D12 is also an analog input so we can "wait a bit" after power-down for the voltage to bleed off or it gets stuck
 
-//Battery vs USB detection pins
-#define USB_POWER_PIN 7 //Digital Pin, should also be interrupt
+// Battery vs USB detection pins
+#define USB_POWER_PIN 7 // Digital Pin, should also be interrupt
 
 /*
  * The available pins for attachInterupt() on the Leonardo are 0, 1, 2, 3, and 7.
@@ -109,13 +130,14 @@
 
 
 
-//**** end of configuration settings  ****
-//**** program logic below this point ****
+// **** end of configuration settings  ****
+// **** program logic below this point ****
 
 #include<avr/sleep.h>
 #include<avr/wdt.h>
 #include<math.h>
 
+// ADC configuration optins
 // https://r6500.blogspot.com/2015/01/fast-adc-on-arduino-leonardo.html
 #define ADC_TIME_104  ADCSRA=(ADCSRA&0xF80)|0x07   
 #define ADC_TIME_52   ADCSRA=(ADCSRA&0xF80)|0x06   
@@ -128,19 +150,24 @@
 // ADC_TIME_26     f=500kHz   Tconv=26us     ENOB > 9
 // ADC_TIME_13     f=1MHz     Tconv=13us     ENOB > 8
 
-int segment[4][7];//LCD segment data stored here
+int segment[4][7]; // LCD segment data stored here
 
-int measuredSpeed=0, oldSpeed=0;//converted data to speed
-int actualSpeed=0; //Speed after correction for cosine
-boolean measuredSpeedValid = false; //stores whether the speed data is valid
-int failedDecodeCount = 0; //count of invalid readings since startup
-unsigned long eTimeEndMainLoop = 0, eTimeStartMainLoop=0; //used to compute main loop elapsed time for user
-int offsetAngle = 0;
+int measuredSpeed=0, oldSpeed=0;     // converted data to speed
+int actualSpeed=0,  offsetAngle = 0; // Speed after correction for cosine
+boolean measuredSpeedValid = false;  // stores whether the speed data is valid
+boolean firstMeasurement = false;    // stores whether this is the first measurement of pulling trigger
+int failedDecodeCount = 0;           // count of invalid readings since startup
+unsigned long eTimeEndMainLoop = 0, eTimeStartMainLoop=0; // used to compute main loop elapsed time
+unsigned long radiateScanTimeElapsed = 0; // Used to compensate for misc processing time in main loop
+unsigned long radiateOffTimeElapsedEarly = 0; // Used to compensate for misc processing time in main loop
+unsigned long radiateOffTimeElapsedLate = 0;  // Used to compensate for misc processing time in main loop
 
 //Run control options (could be adjusted later, defaults set here)
 long radiateOffTime = RADIATE_OFF_TIME;
 long radiateScanTime = RADIATE_SCAN_TIME;
-boolean autoRunRadar = true;
+boolean autoRunRadar = AUTO_RUN_RADAR;
+boolean printZero = PRINT_ZERO_SPEED;
+boolean printFirst = PRINT_FIRST_SPEED;
 
 
 
@@ -162,24 +189,21 @@ void setup()
         Serial.println(F("Based on project from Kevin Darrah\n\n"));
         Serial.println();
         Serial.println(F("Starting up..."));
-
   }
 
-  
-
-  //Initialize pins and such
+  // Initialize pins and such
   #ifdef DEBUG_LED_PIN
   pinMode(DEBUG_LED_PIN,OUTPUT);
   #endif
   
-  //configure USB power detect pin - internal pullup on for transistor to pull down
+  // configure USB power detect pin - internal pullup on for transistor to pull down
   pinMode(USB_POWER_PIN,INPUT);
   digitalWrite(USB_POWER_PIN,HIGH);
   
-  //configure sleep mode
+  // configure sleep mode
   set_sleep_mode(SLEEP_MODE_PWR_DOWN);
   
-  //adjust ADC to get faster readings (we can afford less precision)
+  // adjust ADC to get faster readings (we can afford less precision)
   ADC_TIME_13;
 
 
@@ -207,8 +231,9 @@ void setup()
     Serial.println(F("----------------------------------------"));
   }
   #endif
+  
   #ifdef DEBUG_CONTROLS_ON
-  //Leaving the if(Serial) on each print becasue we may want headless tests to run on start
+  // Leaving the if(Serial) on each print becasue we may want headless tests to run on start
   if(Serial) Serial.println(F("Running control signal tests . . ."));
   if(isPowerOn())
   {
@@ -252,7 +277,7 @@ void setup()
   }
   #endif
 
-  //Scan the LCD once so we know what state we are in going into the loop
+  // Scan the LCD once so we know what state we are in going into the loop
   scanLcd();
 
   if(Serial) Serial.println(F("Ready."));
@@ -265,10 +290,11 @@ void setup()
     Serial.println(F("Hardware reset or power cycle required to wake up."));
     Serial.flush();
   }
-  delay(10000); //Makes it easier to re-flashy
-  sleepForever(); //For debugging the Arduino in sleep-mode
+  delay(10000);   // Makes it easier to re-flashing
+  sleepForever(); // For debugging the Arduino in sleep-mode
   #endif
-}//setup
+  
+}// end setup()
 
 
 
@@ -281,35 +307,50 @@ void loop()
     flashDebugLED(200,3);
   #endif
   
-  //If we are on battery power
+  // If we are on battery power
   if(!isUsbPower())
   {
     if(isPowerOn())
     {
-      //Turn off the radar
+      // Turn off the radar
       powerOff();
     }
     
-    //Put to deep sleep
+    // Put to deep sleep
     goToSleep();
-  }
+  } // end if: battery power
 
-  //Check if any new commands have been sent
+  // Check if any new commands have been sent
   readSerialCommands();
 
-  //Decide if we are running the radar or not
+  // Decide if we are running the radar or not
   if(autoRunRadar)
   {
     if(!isPowerOn())
     {
       powerOn();
     }
-  
-    //Pull the trigger to search for a target
+
+    // Pull the trigger to search for a target
     if(radiateScanTime > 0)
     {
+      // Track non-radiating time before trigger
+      radiateOffTimeElapsedEarly = millis() - radiateOffTimeElapsedEarly;
+    
+      radiateScanTimeElapsed = millis();  // Track radiating time after trigger
       holdTrigger();
-      sDelay(radiateScanTime);
+      radiateScanTimeElapsed = millis()-radiateScanTimeElapsed;
+
+          
+      #ifdef DEBUG_SCAN_OFF_DELAY
+      if(Serial) Serial.print(F("radiateScanTime = "));
+      if(Serial) Serial.print(radiateScanTime);
+      if(Serial) Serial.print(F("; radiateScanTimeElapsed = "));
+      if(Serial) Serial.println(radiateScanTimeElapsed);
+      #endif
+      sDelay(radiateScanTime-radiateScanTimeElapsed);
+      
+      radiateOffTimeElapsedLate = millis();  // Track non-radiating time after trigger
       releaseTrigger();
     }
     else if(radiateScanTime == 0 && isRadiating())
@@ -321,8 +362,8 @@ void loop()
       holdTrigger();
     }
   
-    //The releaseTrigger already scans the LCD, no need to do it again
-    //but if the radiateScanTime is 0 or -1 special cases we need to
+    // The releaseTrigger already scans the LCD, no need to do it again
+    // but if the radiateScanTime is 0 or -1 special cases we need to
     if(radiateScanTime < 1)
     {
       scanLcd();
@@ -333,74 +374,89 @@ void loop()
       if(Serial) Serial.println(F("Low Battery"));
     #endif
   
-    //Decode and print the speed
+    // Decode and print the speed
     decodeLcdSpeed();
     printSpeed();
-  
-    //Wait before looping for next reading
-    //Makes no sense if radar is manual on/off to wait between scans - so skip in those cases
+    
+    // Wait before looping for next reading
+    // Makes no sense if radar is manual on/off to wait between scans - so skip in those cases
     if(radiateScanTime > 0)
     {
-      sDelay(radiateOffTime);
+      // Track non-radiating time after trigger
+      radiateOffTimeElapsedLate = millis() - radiateOffTimeElapsedLate;
+    
+      #ifdef DEBUG_SCAN_OFF_DELAY
+      if(Serial) Serial.print(F("radiateOffTime = "));
+      if(Serial) Serial.print(radiateOffTime);
+      if(Serial) Serial.print(F("; radiateOffTimeElapsedEarly = "));
+      if(Serial) Serial.print(radiateOffTimeElapsedEarly);
+      if(Serial) Serial.print(F("; radiateOffTimeElapsedLate  = "));
+      if(Serial) Serial.println(radiateOffTimeElapsedLate);
+      #endif
+      
+      // Calculate time we have spend doing non-radiating computation
+      sDelay(radiateOffTime - radiateOffTimeElapsedEarly - radiateOffTimeElapsedLate);
+
+      //Track non-radiating time before next trigger push
+      radiateOffTimeElapsedEarly = millis();
     }
     
-  } //if: run radar
-  else //if radar is not running
+  } // end if: run radar
+  else // else radar is not running
   {
-    //Keep refreshing the in-memory state so
-    //its up to date when interacted with
+    // Keep refreshing the in-memory state so
+    // its up to date when interacted with
     scanLcd();
     decodeLcdSpeed();
-  } //if-else: if radar is not running
-
-  eTimeEndMainLoop = millis()-eTimeStartMainLoop;
+  } // end if-else: if radar is not running
 
   #ifdef DEBUG_MAIN_LOOP_TIME
   if(Serial)
   {
     Serial.print(F("Main Loop eTime: "));
-    Serial.print(eTimeEndMainLoop);
+    Serial.print(millis()-eTimeStartMainLoop);
     Serial.println(F(" mS"));
   }
   #endif
-}
+  eTimeEndMainLoop = millis()-eTimeStartMainLoop;
+} //end loop()
 
 
 
-//Scans the LCD segments and updates stored matrix states
+// Scans the LCD segments and updates stored matrix states
 void scanLcd()
 {  
   clearLcd();
 
-  //Pause a moment in case something was just busy
+  // Pause a moment in case something was just busy
   delay(LCD_SCAN_DELAY);
   
-  unsigned long scanTimeStart = millis();//timeout for scanning LCD
+  unsigned long scanTimeStart = millis(); // timeout for scanning LCD
 
-  while (millis() - scanTimeStart < LCD_SCAN_TIME) //jump in and scan the LCD!
+  while (millis() - scanTimeStart < LCD_SCAN_TIME) // jump in and scan the LCD!
   {
-    for (int i = 7; i < 11; i++)  //sweep the common pins
+    for (int i = 7; i < 11; i++)  // sweep the common pins
     {
       if (analogRead(i) < 10) // LOW
       {
-        for (int j = 0; j < 7; j++) //sweep the segments after we find an enabled common
+        for (int j = 0; j < 7; j++) // sweep the segments after we find an enabled common
         {
-          if (analogRead(j) > 600) //HIGH
+          if (analogRead(j) > 600) // HIGH
           {
-            segment[i - 7][j] = 1;//set the segment to a 1
-          } //if: HIGH
-        } //for: sweep the segments after we find an enabled common
-      } // if: LOW
-    } //for: sweep the common pins
-  } //while: jump in and scan the LCD!
+            segment[i - 7][j] = 1; // set the segment to a 1
+          } // end if: HIGH
+        } // end for: sweep the segments after we find an enabled common
+      } // end if: LOW
+    } // end for: sweep the common pins
+  } // end while: jump in and scan the LCD!
 }
 
 
 
-//Decodes an LED segment, returning the value
-//The "valid" parameter should be set to true at start of first digit and passed unchanged to subsequent decodes
-//Updates "valid" parameter to false and returns 0 on invalid data
-//Blank is assumed to be a valid numeric zero
+// Decodes an LCD segment digit, returning the value
+// The "valid" parameter should be set to true at start of first digit and passed unchanged to subsequent decodes
+// Updates "valid" parameter to false and returns 0 on invalid data
+// Blank is assumed to be a valid numeric zero
 int decodeLcdDigit(boolean &valid, int topLeft, int topCenter, int topRight, int middleCenter, int bottomLeft, int bottomCenter, int bottomRight)
 {
   if (topLeft == 0 && topCenter == 0 && topRight == 0 && middleCenter == 0 && bottomLeft == 0 && bottomCenter == 0 && bottomRight == 0)
@@ -447,18 +503,20 @@ int decodeLcdDigit(boolean &valid, int topLeft, int topCenter, int topRight, int
   {
     return 9;
   }
-  else   //Should never happen - means an invalid combination of segments were turned on
+  else   // Should never happen - means an invalid combination of segments were turned on
   {
     valid = false;
     return 0;
   }
 }
 
-//Decode the LCD matrix into speed integer
+
+
+// Decode the LCD matrix into speed integer
 void decodeLcdSpeed()
 {
-  measuredSpeed = 0;//clear the speed, and we'll set it now based on the segment data
-  measuredSpeedValid = true; //assume we will be successful
+  measuredSpeed = 0; // clear the speed, and we'll set it now based on the segment data
+  measuredSpeedValid = true; // assume we will be successful
 
   // ONES POSITION
   //     3,5
@@ -487,12 +545,12 @@ void decodeLcdSpeed()
   //int decodeLcdDigit(                  boolean &valid    , int topLeft  , int topCenter, int topRight , int middleCenter, int bottomLeft, int bottomCenter, int bottomRight)
   measuredSpeed += (100 * decodeLcdDigit(measuredSpeedValid, segment[3][0], segment[3][1], segment[2][1], segment[2][0]   , segment[1][0] , segment[0][1]   ,  segment[1][1]) );
 
-  if(isMph() == isKph()) //Must be one or the other; if neither or both we have bad data
+  if(isMph() == isKph()) // Must be one or the other; if neither or both we have bad data
   {
     measuredSpeedValid = false;
   }
 
-  //Should never happen - means an invalid combination of segments were turned on
+  // Should never happen - means an invalid combination of segments were turned on
   if(!measuredSpeedValid)
   {
     failedDecodeCount++;
@@ -510,12 +568,17 @@ void decodeLcdSpeed()
   }
 }
 
-//Print speed if different from previously stored
+
+
+// Print speed if different from previously stored
 void printSpeed()
 {
-  if(measuredSpeedValid)
-  {
-    if (oldSpeed != measuredSpeed) //ony print speed if it's new and valid
+  if(measuredSpeedValid) // only consider print speed if valid
+  {    
+    if (  ( (oldSpeed != measuredSpeed)        ||  // only print if its changed since last print OR
+            (printFirst && firstMeasurement) ) &&  // first measurement pulling trigger
+                                                   // AND
+            (printZero || actualSpeed > 0)     )   // we either want printing of zeros or its non-zero
     {
       if(Serial)
       {
@@ -523,7 +586,7 @@ void printSpeed()
         Serial.print(actualSpeed);
         Serial.print( isMph() ? F(" MPH") : (isKph() ? F(" KPH") : F(" ???")));
 
-        //If angle was compensating, print raw speed too
+        // If angle was compensating, print raw speed too
         if(offsetAngle > 0)
         {
           Serial.print(F(" (Measured "));
@@ -533,13 +596,21 @@ void printSpeed()
           Serial.print(F(" degrees offset)"));
         }
 
-      //Always print newline after readings
+      // Always print newline after readings
       Serial.println();
-      }
-    }
+      
+      } // end if: serial
+      
+      // Set flag it has been printed
+      firstMeasurement = false;
+      
+    } // end if: should be printed
+    
     oldSpeed = measuredSpeed;
-  }
-  #ifdef DEBUG_ON
+
+  } // end if: valid
+  
+  #if defined DEBUG_ON || defined DEBUG_INVALID_LCD
   else
   {
     if(Serial) Serial.println(F("Invalid measurement decode"));
@@ -553,22 +624,24 @@ void printSpeed()
   #endif
 }
 
-//Clear the LCD matrix
+
+
+// Clear the LCD matrix
 void clearLcd()
 {
-  for (int i = 0; i < 4; i++) {//for degugging and clearing segment data
-    //Serial.print(i);
-    //Serial.print(F(": "));
-    for (int j = 0; j < 7; j++) {
-      //Serial.print(segment[i][j]);
-      //Serial.print(F(","));
+  // clearing segment data
+  for (int i = 0; i < 4; i++)
+  {
+    for (int j = 0; j < 7; j++)
+    {
       segment[i][j] = 0;
     }
-    //Serial.println(F("  "));
   }
 }
 
-//Debugging - print out the detected LCD segments raw
+
+
+// Debugging - print out the detected LCD segments raw
 void dumpLcd()
 {
   #ifdef DEBUG_ON
@@ -619,7 +692,9 @@ void dumpLcd()
   }
 }
 
-//Returns whether the LCD test passed (all segments on)
+
+
+// Returns whether the LCD test passed (all segments on)
 boolean verifyLcdTest()
 {
   int sum=0;
@@ -639,48 +714,54 @@ boolean verifyLcdTest()
   }
   #endif
 
-  return sum == 25; //Should be all 25 segments "on"
+  return sum == 25; // Should be all 25 segments "on"
 }
 
-//LCD Data
+
+
+// LCD Data
 boolean isBatteryLow()
 {
   return segment[0][6];
 }
 
-//LCD Data
+// LCD Data
 boolean isKph()
 {
   return segment[1][6];
 }
 
-//LCD Data
+// LCD Data
 boolean isMph()
 {
   return segment[2][6];
 }
 
-//LCD Data
+// LCD Data
 boolean isRadiating()
 {
   return segment[3][6];
 }
 
-//Is the power source USB
+// Is the power source USB
 boolean isUsbPower()
 {
   return !digitalRead(USB_POWER_PIN);
 }
 
-//Is the radar on (based on LCD Data)
+
+
+// Is the radar on (based on LCD Data)
 boolean isPowerOn()
 {
   scanLcd();
-  //Check the LCD - if its on one of these should be illuminated
+  // Check the LCD - if its on one of these should be illuminated
   return isKph() || isMph();
 }
 
-//Send command to radar (internal use only)
+
+
+// Send command to radar (internal use only)
 void toggleMphKph()
 {
   holdTrigger();
@@ -693,22 +774,26 @@ void toggleMphKph()
   delay(100);
 }
 
-//Send command to radar
-void changeToMph()
+// Send command to radar
+// parameter is global defined MPH or KPH
+//Units references
+#define MPH  1
+#define KPH  2
+void changeUnits(int units)
 {
   if(isPowerOn())
   {
 
-    if(isMph())
+    if( (isMph() && units == MPH) || (isKph() && units == KPH) )
     {
       #ifdef INFO_ON
-      if(Serial) Serial.println(F("Skipping: changeToMph - Units are already MPH"));
+      if(Serial) Serial.println(F("Skipping: changeUnits - Units are already correct"));
       #endif
     }
     else
     {
       #ifdef INFO_ON
-      if(Serial) Serial.println(F("Sending: changeToMph"));
+      if(Serial) Serial.println(F("Sending: toggleMphKph"));
       #endif
       
       toggleMphKph();
@@ -717,51 +802,23 @@ void changeToMph()
   
   scanLcd();
 
-  //Verify units
+  // Verify units
   #ifdef INFO_ON
-  if(Serial) Serial.println( isMph() ? F("changeToMph: OK") : F("changeToMph: FAIL"));
+  if(Serial) Serial.println( (isMph() && units == MPH) || (isKph() && units == KPH) ? F("changeUnits: OK") : F("changeToMph: FAIL") );
   #endif
 }
 
-//Send command to radar
-void changeToKph()
-{
-  if(isPowerOn())
-  {
 
-    if(isKph())
-    {
-      #ifdef INFO_ON
-      if(Serial) Serial.println(F("Skipping: changeToKph - Units are already KPH"));
-      #endif
-    }
-    else
-    {
-      #ifdef INFO_ON
-      if(Serial) Serial.println(F("Sending: changeToKph"));
-      #endif
-    
-      toggleMphKph();
-    }
-  }
-  
-  scanLcd();
 
-  //Verify units
-  #ifdef INFO_ON
-  if(Serial) Serial.println( isKph() ? F("changeToKph: OK") : F("changeToKph: FAIL"));
-  #endif
-}
-
-//Send command to radar (internal use only)
+// Send command to radar (internal use only)
 void holdPowerButton()
 {
   #ifdef DEBUG_PBUTTON_ON
   if(Serial) Serial.println(F("Sending: holdPowerButton"));
   #endif
 
-  //Set it as an output to pull it hard low
-  //Real life these push together under one rubber cap
+  // Set it as an output to pull it hard low
+  // Real life these push together under one rubber cap
   pinMode(POWER_ON_PIN,OUTPUT);
   pinMode(POWER_OFF_PIN,OUTPUT);
 
@@ -770,15 +827,15 @@ void holdPowerButton()
   #endif
 }
 
-//Send command to radar (internal use only)
+// Send command to radar (internal use only)
 void releasePowerButton()
 {
   #ifdef DEBUG_PBUTTON_ON
   if(Serial) Serial.println(F("Sending: releasePowerButton"));
   #endif
   
-  //Set it as an input to let it float
-  //Real life these push together under one rubber cap
+  // Set it as an input to let it float
+  // Real life these push together under one rubber cap
   pinMode(POWER_ON_PIN,INPUT);
   pinMode(POWER_OFF_PIN,INPUT);
 
@@ -787,7 +844,7 @@ void releasePowerButton()
   #endif
 }
 
-//Send command to radar
+// Send command to radar
 void powerOn()
 {
   #ifdef INFO_ON
@@ -804,23 +861,23 @@ void powerOn()
   scanLcd();
 
   #ifdef DEBUG_ON
-  //Verify display self-test
+  // Verify display self-test
     if(Serial) Serial.println( verifyLcdTest() ? F("lcdTest: OK") : F("lcdTest: FAIL"));
   #endif
   
 
-  //Wait for self test to clear
+  // Wait for self test to clear
   delay(1100);
   
   scanLcd();
 
-  //Verify power
+  // Verify power
   #ifdef INFO_ON
   if(Serial) Serial.println( isPowerOn() ? F("powerOn: OK") : F("powerOn: FAIL"));
   #endif
 }
 
-//Send command to radar
+// Send command to radar
 void powerOff()
 {
   #ifdef INFO_ON
@@ -829,62 +886,68 @@ void powerOff()
 
   releaseTrigger();
   
-  //Set it as an output to pull it hard low
+  // Set it as an output to pull it hard low
   holdPowerButton();
   delay(3100); //wait 3 sec countdown plus a bit
-  //Set it as an input to let it float
+  // Set it as an input to let it float
   releasePowerButton();
   //Delay for voltage to stabilize
   delay(100);
 
-  //TODO: Check power off pin voltage and wait a bit
-  //Unsure why this sometimes happens
+  // TODO: Check power off pin voltage and wait a bit
+  // Unsure why this sometimes happens
   
   scanLcd();
   
-  //Verify power
+  // Verify power
   #ifdef INFO_ON
   if(Serial) Serial.println( isPowerOn() ? F("powerOff: FAIL") : F("powerOff: OK"));
   #endif
 }
 
-//Send command to radar
+
+
+// Send command to radar
 void holdTrigger()
 {
   #ifdef DEBUG_TRIGGER_ON
   if(Serial) Serial.println(F("Sending: holdTrigger"));
   #endif
   
-  //Set it as an output to pull it hard low
+  // Set it as an output to pull it hard low
   pinMode(TRIGGER_PIN,OUTPUT);
 
   scanLcd();
 
-  //Verify radiating
+  firstMeasurement = true;
+
+  // Verify radiating
   #ifdef DEBUG_TRIGGER_ON
   if(Serial) Serial.println( isRadiating() ? F("holdTrigger: OK") : F("holdTrigger: FAIL"));
   #endif
 }
 
-//Send command to radar
+// Send command to radar
 void releaseTrigger()
 {
   #ifdef DEBUG_TRIGGER_ON
   if(Serial) Serial.println(F("Sending: releaseTrigger"));
   #endif
   
-  //Set it as an output to pull it hard low
+  // Set it as an output to pull it hard low
   pinMode(TRIGGER_PIN,INPUT);
-
+  
   scanLcd();
 
-  //Verify not radiating
+  // Verify not radiating
   #ifdef DEBUG_TRIGGER_ON
   if(Serial) Serial.println( isRadiating() ? F("releaseTrigger: FAIL") : F("releaseTrigger: OK"));
   #endif
 }
 
-//put Arduino board to sleep mode
+
+
+// put Arduino board to sleep mode
 void goToSleep()
 {
   #ifdef DEBUG_LED_PIN
@@ -914,7 +977,7 @@ void goToSleep()
 }
 
 #ifdef DEBUG_SLEEP_FOREVER
-//Allows forcing to sleep with no interrupt to wake - for testing only
+// Allows forcing to sleep with no interrupt to wake - for testing only
 void sleepForever()
 {
   sleep_enable();          // enables the sleep bit in the mcucr register
@@ -925,13 +988,13 @@ void sleepForever()
 }
 #endif
 
-//Code run when the interrupt fires
+// Code run when the interrupt fires
 void doInterrupt()
 {
-  //We don't actually need to do anything here, its only used to wake from sleep
+  // We don't actually need to do anything here, its only used to wake from sleep
 }
 
-//disable interrupt so we don't get stuck
+// disable interrupt so we don't get stuck
 boolean interruptEnabled = false;
 void disableInterrupt()
 {
@@ -942,7 +1005,7 @@ void disableInterrupt()
   }
 }
 
-//enable interrupt so USB Connect is picked up
+// enable interrupt so USB Connect is picked up
 void enableInterrupt()
 {
   if(!interruptEnabled)
@@ -953,7 +1016,9 @@ void enableInterrupt()
   }
 }
 
-//print expected serial command syntax
+
+
+// print expected serial command syntax
 void printSerialCommands()
 {
   if(Serial)
@@ -984,20 +1049,24 @@ void printSerialCommands()
     Serial.println(F("#                         measuredSpeed=0                    #"));
     Serial.println(F("#  Config                                                    #"));
     Serial.println(F("#         [G]ET       : Print current config values          #"));
-    Serial.println(F("#         [A]UTO    # : Radar auto-processing 1=On 0=Off     #"));
+    Serial.println(F("#         [A]UTO    # : Radar auto-processing   1=On 0=Off   #"));
     Serial.println(F("#         [S]CAN    # : Set Radiating Scan Time (long msec)  #"));
     Serial.println(F("#                       (0)=never radiate; (-1)=always on    #"));
     Serial.println(F("#         [O]FF     # : Set Radiating Off Time  (long msec)  #"));
     Serial.println(F("#                       NOTE: Ignored if SCAN = 1 or 0       #"));
-    Serial.println(F("#         [I]NIT   -9 : Init & Reboot (arg = -9 to confirm)  #"));
     Serial.println(F("#         [C]ORR    # : Correction for offset angle (0-89)   #"));
     Serial.println(F("#                       NOTE: Init causes USB re-detect      #"));
+    Serial.println(F("#         [F]IRST   # : Print 1st reading always 1=On 0=Off  #"));
+    Serial.println(F("#         [Z]ERO    # : Print zero-speed scans   1=On 0=Off  #"));
+    Serial.println(F("#         [I]NIT   -9 : Init & Reboot (arg = -9 to confirm)  #"));
     Serial.println(F("#                                                            #"));
     Serial.println(F("##############################################################"));
   }
 }
 
-//read and process incoming serial commands
+
+
+// read and process incoming serial commands
 void readSerialCommands()
 {
   if(Serial.available())
@@ -1005,7 +1074,7 @@ void readSerialCommands()
     // Read until newline
     String input = Serial.readStringUntil('\n');
 
-    //Convert to upper-case (we don't want case-sensitive)
+    // Convert to upper-case (we don't want case-sensitive)
     input.toUpperCase();
 
     #ifdef DEBUG_SERIAL_INPUT_ON
@@ -1017,18 +1086,18 @@ void readSerialCommands()
     }
     #endif
 
-    //If we got non-zero input, process it
+    // If we got non-zero input, process it
     if(input.length() > 0)
     {
-      //Extract first characater (command key)
+      // Extract first characater (command key)
       char serialCommand = input[0];
 
-      //Storage for numeric argument (-999 is invalid)
+      // Storage for numeric argument (-999 is invalid)
       long serialCommandArg = -999;
 
-      //Search for numeric arguments
+      // Search for numeric arguments
       int searchIndex = 0;
-      int scalor = 1; //positive/negative scalor
+      int scalor = 1; // positive/negative scalor
       while(searchIndex < input.length() && (input[searchIndex] < '0' || input[searchIndex] > '9'))
       {
         #ifdef DEBUG_SERIAL_INPUT_ON
@@ -1042,7 +1111,7 @@ void readSerialCommands()
         searchIndex++;
       }
 
-      //Check if its negative
+      // Check if its negative
       if(searchIndex > 0 && input[searchIndex-1] == '-')
       {
         scalor = -1;
@@ -1056,15 +1125,15 @@ void readSerialCommands()
         #endif
       }
 
-      //Extract numeric value
+      // Extract numeric value
       while(searchIndex < input.length() && (input[searchIndex] >= '0' && input[searchIndex] <= '9'))
       {
         if(serialCommandArg == -999)
         {
-          serialCommandArg=0;            //Set to zero if first valid value
+          serialCommandArg=0;            // Set to zero if first valid value
         }
 
-        serialCommandArg*=10;             //Shift place value
+        serialCommandArg*=10;             // Shift place value
         serialCommandArg+=(input[searchIndex]-'0'); //Add digit
 
         #ifdef DEBUG_SERIAL_INPUT_ON
@@ -1078,7 +1147,7 @@ void readSerialCommands()
         searchIndex++;
       }
 
-      //Make negative if applicable
+      // Make negative if applicable
       serialCommandArg*=scalor;
 
       #ifdef DEBUG_SERIAL_INPUT_ON
@@ -1091,11 +1160,11 @@ void readSerialCommands()
 
       switch (serialCommand)
       {
-        case 'H': //HELP - Help Menu
+        case 'H': // HELP - Help Menu
           printSerialCommands();
           break;
 
-        case 'E': //ETIME - Show eTime Metrics For Main Loop
+        case 'E': // ETIME - Show eTime Metrics For Main Loop
           if(Serial)
           {
             Serial.print(F("INFO ETIME = "));
@@ -1103,7 +1172,7 @@ void readSerialCommands()
           }
           break;
           
-        case 'T': //TRIG # - Ctrl Trigger 1=Hold 0=Release
+        case 'T': // TRIG # - Ctrl Trigger 1=Hold 0=Release
           if(serialCommandArg == 1)
           {
             holdTrigger();
@@ -1126,7 +1195,7 @@ void readSerialCommands()
           #endif
           break;
           
-        case 'P': //POWER # - Ctrl Power Button 1=On   0=Off
+        case 'P': // POWER # - Ctrl Power Button 1=On   0=Off
           if(serialCommandArg == 1)
           {
             if(!isPowerOn())
@@ -1148,20 +1217,16 @@ void readSerialCommands()
           #endif
           break;
           
-        case 'M': //Measure - Ctrl Poll Speed Measurement (if changed)
+        case 'M': // Measure - Ctrl Poll Speed Measurement (if changed)
           scanLcd();
           decodeLcdSpeed();
           printSpeed();  
           break;
           
-        case 'U': //Units - Set Units (1)=MPH; (2)=KPH
-          if(serialCommandArg == 1)
+        case 'U': // Units - Set Units (1)=MPH; (2)=KPH
+          if(serialCommandArg == 1 || serialCommandArg == 2)
           {
-            changeToMph();
-          }
-          else if(serialCommandArg == 2)
-          {
-            changeToKph();
+            changeUnits(serialCommandArg);
           }
           else
           {
@@ -1174,7 +1239,7 @@ void readSerialCommands()
           #endif
           break;
           
-        case 'R': //REFRESH - Poll LCD Scan and print LCD data
+        case 'R': // REFRESH - Poll LCD Scan and print LCD data
           decodeLcdSpeed();
 
           if(Serial)
@@ -1194,31 +1259,33 @@ void readSerialCommands()
           }
           break;
           
-        case 'G': //GET - Print current config values
+        case 'G': // GET - Print current config values
           if(Serial)
           {
-            Serial.print(F("CONFIG AUTO = "));
+            Serial.print(F("CONFIG AUTO  = "));
             Serial.println(autoRunRadar);
             
-            Serial.print(F("CONFIG SCAN = "));
+            Serial.print(F("CONFIG SCAN  = "));
             Serial.println(radiateScanTime);
             
-            Serial.print(F("CONFIG OFF  = "));
+            Serial.print(F("CONFIG OFF   = "));
             Serial.println(radiateOffTime);
 
-            Serial.print(F("CONFIG CORR = "));
+            Serial.print(F("CONFIG CORR  = "));
             Serial.println(offsetAngle);
+            
+            Serial.print(F("CONFIG FIRST = "));
+            Serial.println(printFirst);
+            
+            Serial.print(F("CONFIG ZERO  = "));
+            Serial.println(printZero);
           }
           break;
           
-        case 'A': //AUTO - Radar auto-processing 1=On 0=Off
-          if(serialCommandArg == 1)
+        case 'A': // AUTO - Radar auto-processing 1=On 0=Off
+          if(serialCommandArg == 0 || serialCommandArg == 1)
           {
-            autoRunRadar=1;
-          }
-          else if(serialCommandArg == 0)
-          {
-            autoRunRadar=0;
+            autoRunRadar=serialCommandArg;
           }
           else
           {
@@ -1234,7 +1301,7 @@ void readSerialCommands()
           #endif
           break;
           
-        case 'S': //SCAN - Set Radiating Scan Time (long msec) (0)=never radiate; (-1)=always on
+        case 'S': // SCAN - Set Radiating Scan Time (long msec) (0)=never radiate; (-1)=always on
           if(serialCommandArg >= -1)
           {
             radiateScanTime=serialCommandArg;
@@ -1247,13 +1314,13 @@ void readSerialCommands()
           #ifdef INFO_SERIAL_INPUT_ON
           if(Serial)
           {
-            Serial.print(F("CONFIG SCAN = "));
+            Serial.print(F("CONFIG SCAN  = "));
             Serial.println(radiateScanTime);
           }
           #endif
           break;
           
-        case 'O': //OFF - Set Radiating Off Time  (long msec)
+        case 'O': // OFF - Set Radiating Off Time  (long msec)
           if(serialCommandArg >= 0)
           {
             radiateOffTime=serialCommandArg;
@@ -1266,13 +1333,13 @@ void readSerialCommands()
           #ifdef INFO_SERIAL_INPUT_ON
           if(Serial)
           {
-            Serial.print(F("CONFIG OFF  = "));
+            Serial.print(F("CONFIG OFF   = "));
             Serial.println(radiateOffTime);
           }
           #endif
           break;
 
-        case 'C': //CORR - Set Correction for offset angle (0-89)
+        case 'C': // CORR - Set Correction for offset angle (0-89)
         if(serialCommandArg >= 0 && serialCommandArg < 90)
           {
             offsetAngle=serialCommandArg;
@@ -1291,7 +1358,44 @@ void readSerialCommands()
           #endif
           break;
 
-        case 'I': //Init - Init & Reboot (arg = -9 to confirm)
+        case 'F': // FIRST - Print 1st reading always 1=On 0=Off
+          if(serialCommandArg == 0 || serialCommandArg == 1)
+          {
+            printFirst=serialCommandArg;
+          }
+          else
+          {
+            if(Serial) Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
+          }
+
+          #ifdef INFO_SERIAL_INPUT_ON
+          if(Serial)
+          {
+            Serial.print(F("CONFIG FIRST = "));
+            Serial.println(printFirst);
+          }
+          #endif
+          break;          
+        case 'Z': // ZERO - Print zero-speed scans 1=On 0=Off
+          if(serialCommandArg == 0 || serialCommandArg == 1)
+          {
+            printZero=serialCommandArg;
+          }
+          else
+          {
+            if(Serial) Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
+          }
+
+          #ifdef INFO_SERIAL_INPUT_ON
+          if(Serial)
+          {
+            Serial.print(F("CONFIG ZERO  = "));
+            Serial.println(printZero);
+          }
+          #endif
+          break;
+
+        case 'I': // Init - Init & Reboot (arg = -9 to confirm)
           if(serialCommandArg >= -9)
           {
             if(Serial) Serial.println(F("CONFIG INIT - Initializing and rebooting, please wait . . ."));
@@ -1313,24 +1417,34 @@ void readSerialCommands()
           if(Serial) Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
           break;
           
-      } //switch/case
-    } //if: input length >1
-  }//if: serial
-}
+      } // end switch/case
+    } // end if: input length >1
+  }// end if: serial
+}// end readSerialCommands()
 
-//serial input friendly delay...monitors for serial commands faster
+// serial input friendly delay...monitors for serial commands faster
 #define SDELAY_MS 250
 void sDelay(long ms)
 {
-  //do tiny delays of SDELAY_MS ms until we are waiting less than that
+  #ifdef DEBUG_SDELAY
+  if(Serial)
+  {
+    Serial.print(F("sDelay("));
+    Serial.print(ms);
+    Serial.println(F(")"));
+  }
+  unsigned long eTimeDebug = millis();
+  #endif
+  
+  // do tiny delays of SDELAY_MS ms until we are waiting less than that
   while(ms > SDELAY_MS)
   {
-    //Time and run readSerialCommands
+    // Time and run readSerialCommands
     unsigned long eTime=millis();
     readSerialCommands();
     eTime = millis()-eTime;
 
-    //Wait remainder of SDELAY_MS    
+    // Wait remainder of SDELAY_MS    
     if(eTime < SDELAY_MS)
     {
       delay(SDELAY_MS-eTime);
@@ -1342,20 +1456,30 @@ void sDelay(long ms)
     }
   }
   
-  //if there was some small <SDELAY_MS ms left, wait that amount now.
+  // if there was some small <SDELAY_MS ms left, wait that amount now.
   if(ms > 0)
     delay(ms);
+
+  #ifdef DEBUG_SDELAY
+  eTimeDebug = millis()-eTimeDebug;
+  if(Serial)
+  {
+    Serial.print(F("Actual sDelay was "));
+    Serial.println(eTimeDebug);
+  }
+  #endif
 }
 
 
-//Reboot to reinitialize defaults
+
+// Reboot to reinitialize defaults
 void reboot() {
   wdt_disable();
   wdt_enable(WDTO_15MS);
   while (1) {}
 }
 
-//debug flashing LED pin
+// debug flashing LED pin
 #ifdef DEBUG_LED_PIN
 void flashDebugLED(int rate, int count)
 {
