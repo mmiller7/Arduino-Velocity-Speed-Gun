@@ -11,6 +11,12 @@
  *   Added serial command processing
  *   Optimized LCD digit decoding (NOTE - this version may have decoding bug in parameter order
  *   Improved preprocessor directives for debugging
+ * v3
+ *   LCD digit decoding (NOTE - this version may have decoding bug in parameter order)
+ *   Improved initialization
+ *   Improved preprocessor directives for debugging
+ *   Changed serial print strings to F() for lower RAM use
+ *   Improved main processing loop
  */
 
 
@@ -18,8 +24,10 @@
 #define INFO_ON                //Print informational outputs (e.g. sent power commands, low battery)
 //#define DEBUG_ON               //Print debug statments
 //#define DEBUG_CONTROLS_ON      //Run test of button actions during startup
-//#define DEBUG_LED_PIN 13       //Flash LED pin 13 to debug USB signal detect and sleep
 //#define DEBUG_TRIGGER_ON       //Print information when pulling/releasing trigger
+//#define DEBUG_MAIN_LOOP_TIME   //Print elapsed time metrics for main processing loop
+//#define DEBUG_LED_PIN 13       //Flash LED pin 13 to debug USB signal detect and sleep
+
 #define INFO_SERIAL_INPUT_ON   //Print informational outputs (e.g. echo back commands after set)
 //#define DEBUG_SERIAL_INPUT_ON  //Print debug statments related to serial input received
 
@@ -101,9 +109,10 @@
 
 int segment[4][7];//LCD segment data stored here
 
-int measuredSpeed, oldSpeed;//converted data to speed
+int measuredSpeed=0, oldSpeed=0;//converted data to speed
 boolean measuredSpeedValid = false; //stores whether the speed data is valid
 int failedDecodeCount = 0; //count of invalid readings since startup
+long eTimeEndMainLoop = 0, eTimeStartMainLoop=0; //used to compute main loop elapsed time for user
 
 //Run control options (could be adjusted later, defaults set here)
 long radiateOffTime = RADIATE_OFF_TIME;
@@ -119,18 +128,33 @@ void setup()
   long watchdog = millis();
   //wait up to 5 sec for serial to initialize
   while(((millis()-watchdog) < 5000) && !Serial && isUsbPower());
+
+  if(Serial)
+  {
+        Serial.println();
+        Serial.println(F("Sketch:   " __FILE__));
+        Serial.println(F("Compiled: " __DATE__ " " __TIME__));
+        Serial.println(F("GCC:      " __VERSION__ ));
+        Serial.println(F("Code Designed & Written by: Matthew Miller"));
+        Serial.println(F("Based on project from Kevin Darrah\n\n"));
+        Serial.println();
+        Serial.println(F("Starting up..."));
+
+  }
   
-  if(Serial) Serial.println("Starting up...");
 
   //Initialize pins and such
   #ifdef DEBUG_LED_PIN
   pinMode(DEBUG_LED_PIN,OUTPUT);
   #endif
+  
   //configure USB power detect pin - internal pullup on for transistor to pull down
   pinMode(USB_POWER_PIN,INPUT);
   digitalWrite(USB_POWER_PIN,HIGH);
+  
   //configure sleep mode
   set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+  
   //adjust ADC to get faster readings (we can afford less precision)
   ADC_TIME_13;
 
@@ -139,53 +163,53 @@ void setup()
   #ifdef DEBUG_ON
   if(Serial) 
   {
-    Serial.print("Power source: ");
-    Serial.println( isUsbPower() ? "USB" : "Battery");
-    Serial.println("Setup complete, starting processing loop.");
+    Serial.print(F("Power source: "));
+    Serial.println( isUsbPower() ? F("USB") : F("Battery"));
+    Serial.println(F("Setup complete, starting processing loop."));
     Serial.println();
-    Serial.print("Trigger Button Level: ");
+    Serial.print(F("Trigger Button Level: "));
     Serial.println(digitalRead(TRIGGER_PIN));
-    Serial.print("Power On Button Level: ");
+    Serial.print(F("Power On Button Level: "));
     Serial.println(digitalRead(POWER_ON_PIN));
-    Serial.print("Power Off Button Level: ");
+    Serial.print(F("Power Off Button Level: "));
     Serial.print(digitalRead(POWER_OFF_PIN));
-    Serial.print(" / ");
+    Serial.print(F(" / "));
     Serial.println(analogRead(POWER_OFF_SENSE_PIN));
     int x=micros();
     analogRead(POWER_OFF_SENSE_PIN);
     x = micros() - x;
-    Serial.print("analogRead time micros = ");
+    Serial.print(F("analogRead time micros = "));
     Serial.println(x);
-    Serial.println("----------------------------------------");
+    Serial.println(F("----------------------------------------"));
   }
   #endif
   #ifdef DEBUG_CONTROLS_ON
   //Leaving the if(Serial) on each print becasue we may want headless tests to run on start
-  if(Serial) Serial.println("Running control signal tests . . .");
+  if(Serial) Serial.println(F("Running control signal tests . . ."));
   if(isPowerOn())
   {
-    if(Serial) Serial.println("WARNING: Power is already on, may cause unexpected results!");
+    if(Serial) Serial.println(F("WARNING: Power is already on, may cause unexpected results!"));
   }
   boolean passing = true;
   delay(5000);
-  if(Serial) Serial.println("Testing power-on signal . . .");
+  if(Serial) Serial.println(F("Testing power-on signal . . ."));
   powerOn();
-  if(Serial) Serial.println("Done.");
+  if(Serial) Serial.println(F("Done."));
   passing = passing && isPowerOn;
   delay(5000);
-  if(Serial) Serial.println("Testing hold-trigger signal . . .");
+  if(Serial) Serial.println(F("Testing hold-trigger signal . . ."));
   holdTrigger();
-  if(Serial) Serial.println("Done.");
+  if(Serial) Serial.println(F("Done."));
   passing = passing && isRadiating();
   delay(5000);
-  if(Serial) Serial.println("Testing release-trigger signal . . .");
+  if(Serial) Serial.println(F("Testing release-trigger signal . . ."));
   releaseTrigger();
-  if(Serial) Serial.println("Done.");
+  if(Serial) Serial.println(F("Done."));
   passing = passing && !isRadiating();
   delay(5000);
-  if(Serial) Serial.println("Testing power-off signal . . .");
+  if(Serial) Serial.println(F("Testing power-off signal . . ."));
   powerOff();
-  if(Serial) Serial.println("Done.");
+  if(Serial) Serial.println(F("Done."));
   passing = passing && !isPowerOn();
 
   if(Serial)
@@ -193,27 +217,29 @@ void setup()
     Serial.println();
     if(passing)
     {
-      Serial.println("All tests passed.");
+      Serial.println(F("All tests passed."));
     }
     else
     {
-      Serial.println("One or more tests FAILED!");
+      Serial.println(F("One or more tests FAILED!"));
     }
     delay(5000);
-    Serial.println("----------------------------------------");
+    Serial.println(F("----------------------------------------"));
   }
   #endif
 
   //Scan the LCD once so we know what state we are in going into the loop
   scanLcd();
 
-  if(Serial) Serial.println("Ready.");
+  if(Serial) Serial.println(F("Ready."));
 }//setup
 
 
 
 void loop()
 {
+  eTimeStartMainLoop = millis();
+  
   #ifdef DEBUG_LED_PIN
   if(isUsbPower())
     flashDebugLED(200,3);
@@ -264,7 +290,7 @@ void loop()
   
     #ifdef INFO_ON
     if(isBatteryLow())
-      if(Serial) Serial.println("Low Battery");
+      if(Serial) Serial.println(F("Low Battery"));
     #endif
   
     //Decode and print the speed
@@ -277,8 +303,22 @@ void loop()
   } //if: run radar
   else //if radar is not running
   {
-    //TODO: If its not running
+    //Keep refreshing the in-memory state so
+    //its up to date when interacted with
+    scanLcd();
+    decodeLcdSpeed();
   } //if-else: if radar is not running
+
+  eTimeEndMainLoop = millis()-eTimeStartMainLoop;
+
+  #ifdef DEBUG_MAIN_LOOP_TIME
+  if(Serial)
+  {
+    Serial.print(F("Main Loop eTime: "));
+    Serial.print(eTimeEndMainLoop);
+    Serial.println(F(" mS"));
+  }
+  #endif
 }
 
 
@@ -421,9 +461,9 @@ void printMeasuredSpeed()
     {
       if(Serial)
       {
-        Serial.print("Speed ");
+        Serial.print(F("Speed "));
         Serial.print(measuredSpeed);
-        Serial.println( isMph() ? " mph" : (isKph() ? " kph" : " ???"));
+        Serial.println( isMph() ? F(" mph") : (isKph() ? F(" kph") : F(" ???")));
       }
     }
     oldSpeed = measuredSpeed;
@@ -431,11 +471,11 @@ void printMeasuredSpeed()
   #ifdef DEBUG_ON
   else
   {
-    if(Serial) Serial.println("Invalid measurement decode");
+    if(Serial) Serial.println(F("Invalid measurement decode"));
     dumpLcd();
     if(Serial)
     {
-      Serial.print("Total failed decodes: ");
+      Serial.print(F("Total failed decodes: "));
       Serial.println(failedDecodeCount);
     }
   }
@@ -447,13 +487,13 @@ void clearLcd()
 {
   for (int i = 0; i < 4; i++) {//for degugging and clearing segment data
     //Serial.print(i);
-    //Serial.print(": ");
+    //Serial.print(F(": "));
     for (int j = 0; j < 7; j++) {
       //Serial.print(segment[i][j]);
-      //Serial.print(",");
+      //Serial.print(F(","));
       segment[i][j] = 0;
     }
-    //Serial.println("  ");
+    //Serial.println(F("  "));
   }
 }
 
@@ -464,13 +504,13 @@ void dumpLcd()
   for (int i = 0; i < 4; i++)
   {
     if(Serial) Serial.print(i);
-    if(Serial) Serial.print(": ");
+    if(Serial) Serial.print(F(": "));
     for (int j = 0; j < 7; j++)
     {
       if(Serial) Serial.print(segment[i][j]);
       if(j < 6)
       {
-        if(Serial) Serial.print(",");
+        if(Serial) Serial.print(F(","));
       }
     }
     if(Serial) Serial.println();
@@ -489,21 +529,21 @@ void dumpLcd()
   {
     Serial.println();
   
-    Serial.print(" ");Serial.print( segment[3][1] );Serial.print(" ");              Serial.print("   ");   Serial.print(" ");Serial.print( segment[3][3] );Serial.print(" ");               Serial.print("   ");  Serial.print(" ");Serial.print( segment[3][5] );Serial.println(" ");
+    Serial.print(F(" "));Serial.print( segment[3][1] );Serial.print(F(" "));           Serial.print(F("   "));   Serial.print(F(" "));Serial.print( segment[3][3] );Serial.print(F(" "));            Serial.print(F("   "));  Serial.print(F(" "));Serial.print( segment[3][5] );Serial.println(F(" "));
     
-    Serial.print( segment[3][0] );Serial.print(" ");Serial.print( segment[2][1] );  Serial.print("   ");   Serial.print( segment[3][2] );Serial.print(" ");Serial.print( segment[2][3] );   Serial.print("   ");  Serial.print( segment[3][4] );Serial.print(" ");Serial.println( segment[2][5] );
+    Serial.print( segment[3][0] );Serial.print(F(" "));Serial.print( segment[2][1] );  Serial.print(F("   "));   Serial.print( segment[3][2] );Serial.print(F(" "));Serial.print( segment[2][3] );   Serial.print(F("   "));  Serial.print( segment[3][4] );Serial.print(F(" "));Serial.println( segment[2][5] );
     
-    Serial.print(" ");Serial.print( segment[2][0] );Serial.print(" ");              Serial.print("   ");   Serial.print(" ");Serial.print( segment[2][2] );Serial.print(" ");               Serial.print("   ");  Serial.print(" ");Serial.print( segment[2][4] );Serial.println(" ");
+    Serial.print(F(" "));Serial.print( segment[2][0] );Serial.print(F(" "));           Serial.print(F("   "));   Serial.print(F(" "));Serial.print( segment[2][2] );Serial.print(F(" "));            Serial.print(F("   "));  Serial.print(F(" "));Serial.print( segment[2][4] );Serial.println(F(" "));
     
-    Serial.print( segment[1][0] );Serial.print(" ");Serial.print( segment[1][1] );  Serial.print("   ");   Serial.print( segment[1][2] );Serial.print(" ");Serial.print( segment[1][3] );   Serial.print("   ");  Serial.print( segment[1][4] );Serial.print(" ");Serial.println( segment[1][5] ); 
+    Serial.print( segment[1][0] );Serial.print(F(" "));Serial.print( segment[1][1] );  Serial.print(F("   "));   Serial.print( segment[1][2] );Serial.print(F(" "));Serial.print( segment[1][3] );   Serial.print(F("   "));  Serial.print( segment[1][4] );Serial.print(F(" "));Serial.println( segment[1][5] ); 
     
-    Serial.print(" ");Serial.print( segment[0][1] );Serial.print(" ");              Serial.print(" . ");   Serial.print(" ");Serial.print( segment[0][3] );Serial.print(" ");               Serial.print(" . ");  Serial.print(" ");Serial.print( segment[0][5] );Serial.println(" ");
+    Serial.print(F(" "));Serial.print( segment[0][1] );Serial.print(F(" "));           Serial.print(F(" . "));   Serial.print(F(" "));Serial.print( segment[0][3] );Serial.print(F(" "));            Serial.print(F(" . "));  Serial.print(F(" "));Serial.print( segment[0][5] );Serial.println(F(" "));
   
     Serial.println();
-    Serial.print("mph  = ");Serial.println(segment[2][6]);
-    Serial.print("kph  = ");Serial.println(segment[1][6]);
-    Serial.print("batt = ");Serial.println(segment[0][6]);
-    Serial.print("rdr  = ");Serial.println(segment[3][6]);
+    Serial.print(F("mph  = "));Serial.println(segment[2][6]);
+    Serial.print(F("kph  = "));Serial.println(segment[1][6]);
+    Serial.print(F("batt = "));Serial.println(segment[0][6]);
+    Serial.print(F("rdr  = "));Serial.println(segment[3][6]);
     Serial.println();
   }
 }
@@ -523,7 +563,7 @@ boolean verifyLcdTest()
   #ifdef DEBUG_ON
   if(Serial)
   {
-    Serial.print("LCD Self Test Count = ");
+    Serial.print(F("LCD Self Test Count = "));
     Serial.println(sum);
   }
   #endif
@@ -573,7 +613,7 @@ boolean isPowerOn()
 void powerOn()
 {
   #ifdef INFO_ON
-  if(Serial) Serial.println("Sending: powerOn");
+  if(Serial) Serial.println(F("Sending: powerOn"));
   #endif
 
   releaseTrigger();
@@ -588,7 +628,7 @@ void powerOn()
 
   #ifdef DEBUG_ON
   //Verify display self-test
-    if(Serial) Serial.println( verifyLcdTest() ? "lcdTest: OK" : "lcdTest: FAIL");
+    if(Serial) Serial.println( verifyLcdTest() ? F("lcdTest: OK") : F("lcdTest: FAIL"));
   #endif
   
 
@@ -599,7 +639,7 @@ void powerOn()
 
   //Verify power
   #ifdef INFO_ON
-  if(Serial) Serial.println( isPowerOn() ? "powerOn: OK" : "powerOn: FAIL");
+  if(Serial) Serial.println( isPowerOn() ? F("powerOn: OK") : F("powerOn: FAIL"));
   #endif
 }
 
@@ -607,7 +647,7 @@ void powerOn()
 void powerOff()
 {
   #ifdef INFO_ON
-  if(Serial) Serial.println("Sending: powerOff");
+  if(Serial) Serial.println(F("Sending: powerOff"));
   #endif
 
   releaseTrigger();
@@ -627,7 +667,7 @@ void powerOff()
   
   //Verify power
   #ifdef INFO_ON
-  if(Serial) Serial.println( isPowerOn() ? "powerOff: FAIL" : "powerOff: OK");
+  if(Serial) Serial.println( isPowerOn() ? F("powerOff: FAIL") : F("powerOff: OK"));
   #endif
 }
 
@@ -635,7 +675,7 @@ void powerOff()
 void holdTrigger()
 {
   #ifdef DEBUG_TRIGGER_ON
-  if(Serial) Serial.println("Sending: holdTrigger");
+  if(Serial) Serial.println(F("Sending: holdTrigger"));
   #endif
   
   //Set it as an output to pull it hard low
@@ -645,7 +685,7 @@ void holdTrigger()
 
   //Verify radiating
   #ifdef DEBUG_TRIGGER_ON
-  if(Serial) Serial.println( isRadiating() ? "holdTrigger: OK" : "holdTrigger: FAIL");
+  if(Serial) Serial.println( isRadiating() ? F("holdTrigger: OK") : F("holdTrigger: FAIL"));
   #endif
 }
 
@@ -653,7 +693,7 @@ void holdTrigger()
 void releaseTrigger()
 {
   #ifdef DEBUG_TRIGGER_ON
-  if(Serial) Serial.println("Sending: releaseTrigger");
+  if(Serial) Serial.println(F("Sending: releaseTrigger"));
   #endif
   
   //Set it as an output to pull it hard low
@@ -663,7 +703,7 @@ void releaseTrigger()
 
   //Verify not radiating
   #ifdef DEBUG_TRIGGER_ON
-  if(Serial) Serial.println( isRadiating() ? "releaseTrigger: FAIL" : "releaseTrigger: OK");
+  if(Serial) Serial.println( isRadiating() ? F("releaseTrigger: FAIL") : F("releaseTrigger: OK"));
   #endif
 }
 
@@ -733,6 +773,7 @@ void printSerialCommands()
     Serial.println(F("#         -------- --- ------------------------------------  #"));
     Serial.println(F("#  Info                                                      #"));
     Serial.println(F("#         [H]ELP      : Help Menu (this menu)                #"));
+    Serial.println(F("#         [E]TIME     : eTime Metrics For Main Loop (mS)     #"));
     Serial.println(F("#  Action                                                    #"));
     Serial.println(F("#         [T]RIG    # : Ctrl Trigger       1=Hold 0=Release  #"));
     Serial.println(F("#         [P]OWER   # : Ctrl Power Button  1=On   0=Off      #"));
@@ -771,9 +812,9 @@ void readSerialCommands()
     #ifdef DEBUG_SERIAL_INPUT_ON
     if(Serial)
     {
-      Serial.print("Input: \"");
+      Serial.print(F("Input: \""));
       Serial.print(input);
-      Serial.println("\"");
+      Serial.println(F("\""));
     }
     #endif
 
@@ -794,7 +835,7 @@ void readSerialCommands()
         #ifdef DEBUG_SERIAL_INPUT_ON
         if(Serial)
         {
-            Serial.print("L1 searchIndex=");
+            Serial.print(F("L1 searchIndex="));
             Serial.println(searchIndex);
         }
         #endif
@@ -810,7 +851,7 @@ void readSerialCommands()
         #ifdef DEBUG_SERIAL_INPUT_ON
         if(Serial)
         {
-            Serial.print("Found negative '-' char ");
+            Serial.print(F("Found negative '-' char "));
             Serial.println(searchIndex);
         }
         #endif
@@ -830,7 +871,7 @@ void readSerialCommands()
         #ifdef DEBUG_SERIAL_INPUT_ON
         if(Serial)
         {
-            Serial.print("L2 searchIndex=");
+            Serial.print(F("L2 searchIndex="));
             Serial.println(searchIndex);
         }
         #endif
@@ -844,7 +885,7 @@ void readSerialCommands()
       #ifdef DEBUG_SERIAL_INPUT_ON
       if(Serial)
       {
-          Serial.print("Decoded serialCommandArg=");
+          Serial.print(F("Decoded serialCommandArg="));
           Serial.println(serialCommandArg);
       }
       #endif
@@ -853,6 +894,14 @@ void readSerialCommands()
       {
         case 'H': //HELP - Help Menu
           printSerialCommands();
+          break;
+
+        case 'E': //ETIME - Show eTime Metrics For Main Loop
+          if(Serial)
+          {
+            Serial.print(F("INFO ETIME = "));
+            Serial.println(eTimeEndMainLoop);
+          }
           break;
           
         case 'T': //TRIG # - Ctrl Trigger 1=Hold 0=Release
@@ -866,13 +915,13 @@ void readSerialCommands()
           }
           else
           {
-            if(Serial) Serial.println("ERROR: Invalid command.  Try \"HELP\"");
+            if(Serial) Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
           }
 
           #ifdef INFO_SERIAL_INPUT_ON
           if(Serial)
           {
-            Serial.print("ACTION TRIG = ");
+            Serial.print(F("ACTION TRIG = "));
             Serial.println(isRadiating());
           }
           break;
@@ -891,16 +940,17 @@ void readSerialCommands()
           }
           else
           {
-            if(Serial) Serial.println("ERROR: Invalid command.  Try \"HELP\"");
+            if(Serial) Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
           }
 
           #ifdef INFO_SERIAL_INPUT_ON
-          Serial.print("ACTION POWER = ");
+          Serial.print(F("ACTION POWER = "));
           Serial.println(isPowerOn());
           break;
           #endif
           
         case 'M': //Measure - Ctrl Poll Speed Measurement (if changed)
+          scanLcd();
           decodeLcdSpeed();
           printMeasuredSpeed();  
           break;
@@ -910,17 +960,17 @@ void readSerialCommands()
 
           if(Serial)
           {
-            Serial.print("isPowerOn=");
+            Serial.print(F("isPowerOn="));
             Serial.println(isPowerOn());
-            Serial.print("isBatteryLow=");
+            Serial.print(F("isBatteryLow="));
             Serial.println(isBatteryLow());
-            Serial.print("isMph=");
+            Serial.print(F("isMph="));
             Serial.println(isMph());
-            Serial.print("isKph=");
+            Serial.print(F("isKph="));
             Serial.println(isKph());
-            Serial.print("isRadiating=");
+            Serial.print(F("isRadiating="));
             Serial.println(isRadiating());
-            Serial.print("measuredSpeed=");
+            Serial.print(F("measuredSpeed="));
             Serial.println(measuredSpeedValid ? measuredSpeed : -1);
           }
           break;
@@ -928,13 +978,13 @@ void readSerialCommands()
         case 'G': //GET - Print current config values
           if(Serial)
           {
-            Serial.print("CONFIG AUTO = ");
+            Serial.print(F("CONFIG AUTO = "));
             Serial.println(autoRunRadar);
             
-            Serial.print("CONFIG SCAN = ");
+            Serial.print(F("CONFIG SCAN = "));
             Serial.println(radiateScanTime);
             
-            Serial.print("CONFIG OFF  = ");
+            Serial.print(F("CONFIG OFF  = "));
             Serial.println(radiateOffTime);
           }
           break;
@@ -950,13 +1000,13 @@ void readSerialCommands()
           }
           else
           {
-            if(Serial) Serial.println("ERROR: Invalid command.  Try \"HELP\"");
+            if(Serial) Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
           }
 
           #ifdef INFO_SERIAL_INPUT_ON
           if(Serial)
           {
-            Serial.print("CONFIG AUTO = ");
+            Serial.print(F("CONFIG AUTO = "));
             Serial.println(autoRunRadar);
           }
           #endif
@@ -969,13 +1019,13 @@ void readSerialCommands()
           }
           else
           {
-            if(Serial) Serial.println("ERROR: Invalid command.  Try \"HELP\"");
+            if(Serial) Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
           }
 
           #ifdef INFO_SERIAL_INPUT_ON
           if(Serial)
           {
-            Serial.print("CONFIG SCAN = ");
+            Serial.print(F("CONFIG SCAN = "));
             Serial.println(radiateScanTime);
           }
           #endif
@@ -988,20 +1038,20 @@ void readSerialCommands()
           }
           else
           {
-            if(Serial) Serial.println("ERROR: Invalid command.  Try \"HELP\"");
+            if(Serial) Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
           }
 
           #ifdef INFO_SERIAL_INPUT_ON
           if(Serial)
           {
-            Serial.print("CONFIG OFF  = ");
+            Serial.print(F("CONFIG OFF  = "));
             Serial.println(radiateOffTime);
           }
           #endif
           break;
           
         default:
-          if(Serial) Serial.println("ERROR: Invalid command.  Try \"HELP\"");
+          if(Serial) Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
           break;
           
       } //switch/case
