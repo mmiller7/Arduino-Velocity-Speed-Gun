@@ -40,6 +40,9 @@
  *   Added option to supress printing zero-speed values
  *   Optimized MPH/KPH unit selection function calls 
  *   Optimized some serial command processing
+ * v7 - Jan 2026
+ *   Added option to verify-reading to perform second radar scan (to help combat interference)
+ *   Added debugging for LCD decoding processing
  */
 
 
@@ -48,7 +51,8 @@
 //WARNING - enabling extra debugging may affect timings
 #define INFO_ON                // Print informational outputs (e.g. sent power commands, low battery)
 //#define DEBUG_ON               // Print debug statments
-//#define DEBUG_INVALID_LCD   // Prints information if LCD decode was invalid
+//#define DEBUG_INVALID_LCD      // Prints information if LCD decode was invalid
+//#define DEBUG_LCD_DECODE       // Prints information about LCD decoding
 //#define DEBUG_CONTROLS_ON      // Run test of button actions during startup
 //#define DEBUG_TRIGGER_ON       // Print information when pulling/releasing trigger
 //#define DEBUG_PBUTTON_ON       // Print information when pulling/releasing power button
@@ -71,6 +75,7 @@
 #define AUTO_RUN_RADAR    true  // true - start/stop radar automatically; false - control only by serial
 #define PRINT_ZERO_SPEED  false // true - print speed values of zero; false - print only values >0
 #define PRINT_FIRST_SPEED true  // true - print first scan after trigger pulled even if duplicate
+#define VERIFY_SPEED      false // true - Performs second scan, runs during 'off' time, may affect duty cycle
 
 // CONTROL OPTIONS
 #define LCD_SCAN_DELAY 10   // mS delay for LCD to stabilize before reading
@@ -155,6 +160,7 @@ int segment[4][7]; // LCD segment data stored here
 int measuredSpeed=0, oldSpeed=0;     // converted data to speed
 int actualSpeed=0,  offsetAngle = 0; // Speed after correction for cosine
 boolean measuredSpeedValid = false;  // stores whether the speed data is valid
+int verifiedMeasuredSpeedPercent = -1; // Used to compare if verifying the measured speed; -1 if invalid/unverified
 boolean firstMeasurement = false;    // stores whether this is the first measurement of pulling trigger
 int failedDecodeCount = 0;           // count of invalid readings since startup
 unsigned long eTimeEndMainLoop = 0, eTimeStartMainLoop=0; // used to compute main loop elapsed time
@@ -168,6 +174,7 @@ long radiateScanTime = RADIATE_SCAN_TIME;
 boolean autoRunRadar = AUTO_RUN_RADAR;
 boolean printZero = PRINT_ZERO_SPEED;
 boolean printFirst = PRINT_FIRST_SPEED;
+boolean verifySpeed = VERIFY_SPEED;
 
 
 
@@ -374,8 +381,30 @@ void loop()
       if(Serial) Serial.println(F("Low Battery"));
     #endif
   
-    // Decode and print the speed
+    // Decode the speed
     decodeLcdSpeed();
+    
+    // Perform second pass if verify speed is enabled
+    if(verifySpeed && radiateScanTime > 0 && measuredSpeed > 0)
+    {        
+      radiateScanTimeElapsed = millis();  // Track radiating time after trigger
+      holdTrigger();
+      radiateScanTimeElapsed = millis()-radiateScanTimeElapsed;
+          
+      #ifdef DEBUG_SCAN_OFF_DELAY
+      if(Serial) Serial.print(F("(verifySpeed) radiateScanTime = "));
+      if(Serial) Serial.print(radiateScanTime);
+      if(Serial) Serial.print(F("; radiateScanTimeElapsed = "));
+      if(Serial) Serial.println(radiateScanTimeElapsed);
+      #endif
+      sDelay(radiateScanTime-radiateScanTimeElapsed);
+      
+      releaseTrigger();
+
+      decodeLcdVerifySpeed();
+    }
+
+    //print the speed
     printSpeed();
     
     // Wait before looping for next reading
@@ -515,8 +544,21 @@ int decodeLcdDigit(boolean &valid, int topLeft, int topCenter, int topRight, int
 // Decode the LCD matrix into speed integer
 void decodeLcdSpeed()
 {
-  measuredSpeed = 0; // clear the speed, and we'll set it now based on the segment data
-  measuredSpeedValid = true; // assume we will be successful
+  decodeLcdSpeed(false);
+}
+
+// Decode the LCD matrix into speed integer
+void decodeLcdVerifySpeed()
+{
+  decodeLcdSpeed(true);
+}
+
+// Decode the LCD matrix into speed integer
+// Parameter sets whether we are storing in verified speed or calculating initial speed
+void decodeLcdSpeed(boolean isVerifying)
+{ 
+  int decodedSpeed = 0; // clear the speed, and we'll set it now based on the segment data
+  boolean decodedSpeedValid = true; // assume we will be successful
 
   // ONES POSITION
   //     3,5
@@ -525,7 +567,7 @@ void decodeLcdSpeed()
   // 1,4     1,5
   //     0,5
   //int decodeLcdDigit(          boolean &valid    , int topLeft  , int topCenter, int topRight , int middleCenter, int bottomLeft, int bottomCenter, int bottomRight)
-  measuredSpeed = decodeLcdDigit(measuredSpeedValid, segment[3][4], segment[3][5], segment[2][5], segment[2][4]   , segment[1][4] , segment[0][5]   ,  segment[1][5]);
+  decodedSpeed = decodeLcdDigit(decodedSpeedValid, segment[3][4], segment[3][5], segment[2][5], segment[2][4]   , segment[1][4] , segment[0][5]   ,  segment[1][5]);
 
   // TENS POSITION
   //     3,3
@@ -534,7 +576,7 @@ void decodeLcdSpeed()
   // 1,2     1,3
   //     0,3
   //int decodeLcdDigit(                 boolean &valid    , int topLeft  , int topCenter, int topRight , int middleCenter, int bottomLeft, int bottomCenter, int bottomRight)
-  measuredSpeed += (10 * decodeLcdDigit(measuredSpeedValid, segment[3][2], segment[3][3], segment[2][3], segment[2][2]   , segment[1][2] , segment[0][3]   , segment[1][3]) );
+  decodedSpeed += (10 * decodeLcdDigit(decodedSpeedValid, segment[3][2], segment[3][3], segment[2][3], segment[2][2]   , segment[1][2] , segment[0][3]   , segment[1][3]) );
 
   // HUNDREDS
   //     3,1
@@ -543,29 +585,81 @@ void decodeLcdSpeed()
   // 1,0     1,1
   //     0,1
   //int decodeLcdDigit(                  boolean &valid    , int topLeft  , int topCenter, int topRight , int middleCenter, int bottomLeft, int bottomCenter, int bottomRight)
-  measuredSpeed += (100 * decodeLcdDigit(measuredSpeedValid, segment[3][0], segment[3][1], segment[2][1], segment[2][0]   , segment[1][0] , segment[0][1]   ,  segment[1][1]) );
+  decodedSpeed += (100 * decodeLcdDigit(decodedSpeedValid, segment[3][0], segment[3][1], segment[2][1], segment[2][0]   , segment[1][0] , segment[0][1]   ,  segment[1][1]) );
 
   if(isMph() == isKph()) // Must be one or the other; if neither or both we have bad data
   {
-    measuredSpeedValid = false;
+    decodedSpeedValid = false;
   }
 
-  // Should never happen - means an invalid combination of segments were turned on
-  if(!measuredSpeedValid)
+  if(isVerifying)
   {
-    failedDecodeCount++;
-  }
+    #ifdef DEBUG_LCD_DECODE
+    if(Serial)
+    {
+      Serial.print(F("decodeLcdSpeed - verifying: decodedSpeedValid="));
+      Serial.print(decodedSpeedValid);
+      Serial.print(F("; measuredSpeedValid="));
+      Serial.print(measuredSpeedValid);
+      Serial.print(F("; measuredSpeed="));
+      Serial.print(measuredSpeed);
+      Serial.print(F("; decodedSpeed="));
+      Serial.println(decodedSpeed);
+    }
+    #endif
+    
+    if(decodedSpeedValid && measuredSpeedValid && measuredSpeed > 0)
+    {
+      verifiedMeasuredSpeedPercent = round(  100.0 * (1-( ((double)abs(measuredSpeed-decodedSpeed))/((double)measuredSpeed) ))  );
 
-  if(offsetAngle > 0 && measuredSpeedValid)
-  {
-    //Convert degree to rad
-    double offsetAngleRad = (offsetAngle * 1000.0) / 57296.0;
-    actualSpeed=round(  ((double)measuredSpeed)/cos(offsetAngleRad)  );
+      //Rare case second speed is crazy higher than first, math falls apart.  Cap at 0% confidence
+      if(verifiedMeasuredSpeedPercent < 0)
+        verifiedMeasuredSpeedPercent = 0;
+    }
+    else
+    {
+      verifiedMeasuredSpeedPercent = -1;
+    }
+    
+    #ifdef DEBUG_LCD_DECODE
+    if(Serial)
+    {
+      Serial.print(F("decodeLcdSpeed - verifying computed: verifiedMeasuredSpeedPercent="));
+      Serial.println(verifiedMeasuredSpeedPercent);
+    }
+    #endif
   }
-  else
+  else //not verifying, do main processing
   {
-    actualSpeed=measuredSpeed;
-  }
+    #ifdef DEBUG_LCD_DECODE
+    if(Serial) Serial.println(F("decodeLcdSpeed - processing measurement"));
+    #endif
+  
+    measuredSpeed = decodedSpeed;           // Store decoded speed
+    measuredSpeedValid = decodedSpeedValid; // Store if decode is valid
+    verifiedMeasuredSpeedPercent = -1;        // Reset verified to invalid (we are not verifying this pass)
+  
+    // Should never happen - means an invalid combination of segments were turned on
+    if(!measuredSpeedValid)
+    {
+      failedDecodeCount++;
+    }
+  
+    if(offsetAngle > 0 && measuredSpeedValid)
+    {
+      #ifdef DEBUG_LCD_DECODE
+      if(Serial) Serial.println(F("decodeLcdSpeed - processing offset angle"));
+      #endif
+    
+      //Convert degree to rad
+      double offsetAngleRad = (offsetAngle * 1000.0) / 57296.0;
+      actualSpeed=round(  ((double)measuredSpeed)/cos(offsetAngleRad)  );
+    }
+    else
+    {
+      actualSpeed=measuredSpeed;
+    }
+  } // end else
 }
 
 
@@ -594,6 +688,13 @@ void printSpeed()
           Serial.print(F(" @ "));
           Serial.print(offsetAngle);
           Serial.print(F(" degrees offset)"));
+        }
+
+        if(verifiedMeasuredSpeedPercent > -1)
+        {
+          Serial.print(F(" verified at "));
+          Serial.print(verifiedMeasuredSpeedPercent);
+          Serial.print(F(" %"));
         }
 
       // Always print newline after readings
@@ -1057,6 +1158,9 @@ void printSerialCommands()
     Serial.println(F("#         [C]ORR    # : Correction for offset angle (0-89)   #"));
     Serial.println(F("#                       NOTE: Init causes USB re-detect      #"));
     Serial.println(F("#         [F]IRST   # : Print 1st reading always 1=On 0=Off  #"));
+    Serial.println(F("#         [V]ERIFY  # : Verify measured speeds   1=On 0=Off  #"));
+    Serial.println(F("#                       Performs second scan, runs during    #"));
+    Serial.println(F("#                       'off' time, may affect duty cycle    #"));
     Serial.println(F("#         [Z]ERO    # : Print zero-speed scans   1=On 0=Off  #"));
     Serial.println(F("#         [I]NIT   -9 : Init & Reboot (arg = -9 to confirm)  #"));
     Serial.println(F("#                                                            #"));
@@ -1262,23 +1366,26 @@ void readSerialCommands()
         case 'G': // GET - Print current config values
           if(Serial)
           {
-            Serial.print(F("CONFIG AUTO  = "));
+            Serial.print(F("CONFIG AUTO   = "));
             Serial.println(autoRunRadar);
             
-            Serial.print(F("CONFIG SCAN  = "));
+            Serial.print(F("CONFIG SCAN   = "));
             Serial.println(radiateScanTime);
             
-            Serial.print(F("CONFIG OFF   = "));
+            Serial.print(F("CONFIG OFF    = "));
             Serial.println(radiateOffTime);
 
-            Serial.print(F("CONFIG CORR  = "));
+            Serial.print(F("CONFIG CORR   = "));
             Serial.println(offsetAngle);
             
-            Serial.print(F("CONFIG FIRST = "));
+            Serial.print(F("CONFIG FIRST  = "));
             Serial.println(printFirst);
             
-            Serial.print(F("CONFIG ZERO  = "));
+            Serial.print(F("CONFIG ZERO   = "));
             Serial.println(printZero);
+            
+            Serial.print(F("CONFIG VERIFY = "));
+            Serial.println(verifySpeed);
           }
           break;
           
@@ -1295,7 +1402,7 @@ void readSerialCommands()
           #ifdef INFO_SERIAL_INPUT_ON
           if(Serial)
           {
-            Serial.print(F("CONFIG AUTO = "));
+            Serial.print(F("CONFIG AUTO  = "));
             Serial.println(autoRunRadar);
           }
           #endif
@@ -1314,7 +1421,7 @@ void readSerialCommands()
           #ifdef INFO_SERIAL_INPUT_ON
           if(Serial)
           {
-            Serial.print(F("CONFIG SCAN  = "));
+            Serial.print(F("CONFIG SCAN   = "));
             Serial.println(radiateScanTime);
           }
           #endif
@@ -1333,7 +1440,7 @@ void readSerialCommands()
           #ifdef INFO_SERIAL_INPUT_ON
           if(Serial)
           {
-            Serial.print(F("CONFIG OFF   = "));
+            Serial.print(F("CONFIG OFF    = "));
             Serial.println(radiateOffTime);
           }
           #endif
@@ -1352,7 +1459,7 @@ void readSerialCommands()
           #ifdef INFO_SERIAL_INPUT_ON
           if(Serial)
           {
-            Serial.print(F("CONFIG CORR  = "));
+            Serial.print(F("CONFIG CORR   = "));
             Serial.println(offsetAngle);
           }
           #endif
@@ -1371,11 +1478,12 @@ void readSerialCommands()
           #ifdef INFO_SERIAL_INPUT_ON
           if(Serial)
           {
-            Serial.print(F("CONFIG FIRST = "));
+            Serial.print(F("CONFIG FIRST  = "));
             Serial.println(printFirst);
           }
           #endif
-          break;          
+          break;
+          
         case 'Z': // ZERO - Print zero-speed scans 1=On 0=Off
           if(serialCommandArg == 0 || serialCommandArg == 1)
           {
@@ -1389,8 +1497,27 @@ void readSerialCommands()
           #ifdef INFO_SERIAL_INPUT_ON
           if(Serial)
           {
-            Serial.print(F("CONFIG ZERO  = "));
+            Serial.print(F("CONFIG ZERO   = "));
             Serial.println(printZero);
+          }
+          #endif
+          break;  
+                  
+        case 'V': // ZERO - Print zero-speed scans 1=On 0=Off
+          if(serialCommandArg == 0 || serialCommandArg == 1)
+          {
+            verifySpeed=serialCommandArg;
+          }
+          else
+          {
+            if(Serial) Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
+          }
+
+          #ifdef INFO_SERIAL_INPUT_ON
+          if(Serial)
+          {
+            Serial.print(F("CONFIG VERIFY = "));
+            Serial.println(verifySpeed);
           }
           #endif
           break;
