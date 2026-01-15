@@ -16,7 +16,7 @@ echo "  Count MPH"
 if egrep 'Vfyd' $filename > /dev/null; then
     #                           /-- cut out <50% Vrfd --\
 		#                           |    note CTRL+V TAB    |
-    summary=$(cat "$filename" | egrep -v '	[0-4]?[0-9]%' | awk '{print $9}' | egrep -v 'Raw|^$' | sort -n | uniq -c)
+    summary=$(cat "$filename" | egrep -v '	[+-]?[0-4]?[0-9]%' | awk '{print $9}' | egrep -v 'Raw|^$' | sort -n | uniq -c)
     echo -e "$summary"
 elif egrep '[0-9], [0-9]' $filename > /dev/null; then
     summary=$(cat "$filename" | awk '{print $9}' | egrep -v 'Speed|^$' | sort -n | uniq -c)

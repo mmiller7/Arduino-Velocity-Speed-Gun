@@ -43,6 +43,8 @@
  * v7 - Jan 2026
  *   Added option to verify-reading to perform second radar scan (to help combat interference)
  *   Added debugging for LCD decoding processing
+ *   Added +/- sign to verified speed % to help indicate which direction the error is believed to be
+ *   Adjusted defaults for verifying speed
  */
 
 
@@ -75,7 +77,7 @@
 #define AUTO_RUN_RADAR    true  // true - start/stop radar automatically; false - control only by serial
 #define PRINT_ZERO_SPEED  false // true - print speed values of zero; false - print only values >0
 #define PRINT_FIRST_SPEED true  // true - print first scan after trigger pulled even if duplicate
-#define VERIFY_SPEED      false // true - Performs second scan, runs during 'off' time, may affect duty cycle
+#define VERIFY_SPEED      true  // true - Performs second scan, runs during 'off' time, may affect duty cycle
 
 // CONTROL OPTIONS
 #define LCD_SCAN_DELAY 10   // mS delay for LCD to stabilize before reading
@@ -160,7 +162,7 @@ int segment[4][7]; // LCD segment data stored here
 int measuredSpeed=0, oldSpeed=0;     // converted data to speed
 int actualSpeed=0,  offsetAngle = 0; // Speed after correction for cosine
 boolean measuredSpeedValid = false;  // stores whether the speed data is valid
-int verifiedMeasuredSpeedPercent = -1; // Used to compare if verifying the measured speed; -1 if invalid/unverified
+int verifiedMeasuredSpeedPercent = -999; // Used to compare if verifying the measured speed; -1 if invalid/unverified
 boolean firstMeasurement = false;    // stores whether this is the first measurement of pulling trigger
 int failedDecodeCount = 0;           // count of invalid readings since startup
 unsigned long eTimeEndMainLoop = 0, eTimeStartMainLoop=0; // used to compute main loop elapsed time
@@ -610,15 +612,19 @@ void decodeLcdSpeed(boolean isVerifying)
     
     if(decodedSpeedValid && measuredSpeedValid && measuredSpeed > 0)
     {
-      verifiedMeasuredSpeedPercent = round(  100.0 * (1-( ((double)abs(measuredSpeed-decodedSpeed))/((double)measuredSpeed) ))  );
+      verifiedMeasuredSpeedPercent = round(  100.0 * (1.0-( ((double)abs(measuredSpeed-decodedSpeed))/((double)measuredSpeed) ))  );
 
-      //Rare case second speed is crazy higher than first, math falls apart.  Cap at 0% confidence
+      // Rare case second speed is crazy higher than first, math falls apart.  Cap at 0% confidence
       if(verifiedMeasuredSpeedPercent < 0)
         verifiedMeasuredSpeedPercent = 0;
+
+      // If the % verified is between 0 and 100; and also previously measured speed is higher than new decoded (verifying) speed, make negative so we can tell
+      if(verifiedMeasuredSpeedPercent > 0 && verifiedMeasuredSpeedPercent < 100 && measuredSpeed > decodedSpeed)
+        verifiedMeasuredSpeedPercent*= -1;
     }
     else
     {
-      verifiedMeasuredSpeedPercent = -1;
+      verifiedMeasuredSpeedPercent = -999;
     }
     
     #ifdef DEBUG_LCD_DECODE
@@ -637,7 +643,7 @@ void decodeLcdSpeed(boolean isVerifying)
   
     measuredSpeed = decodedSpeed;           // Store decoded speed
     measuredSpeedValid = decodedSpeedValid; // Store if decode is valid
-    verifiedMeasuredSpeedPercent = -1;        // Reset verified to invalid (we are not verifying this pass)
+    verifiedMeasuredSpeedPercent = -999;    // Reset verified to invalid (we are not verifying this pass)
   
     // Should never happen - means an invalid combination of segments were turned on
     if(!measuredSpeedValid)
@@ -690,9 +696,11 @@ void printSpeed()
           Serial.print(F(" degrees offset)"));
         }
 
-        if(verifiedMeasuredSpeedPercent > -1)
+        if(verifiedMeasuredSpeedPercent > -999)
         {
           Serial.print(F(" verified at "));
+          if(verifiedMeasuredSpeedPercent > 0 && verifiedMeasuredSpeedPercent < 100)
+            Serial.print("+");
           Serial.print(verifiedMeasuredSpeedPercent);
           Serial.print(F(" %"));
         }
