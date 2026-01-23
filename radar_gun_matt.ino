@@ -45,6 +45,9 @@
  *   Added debugging for LCD decoding processing
  *   Added +/- sign to verified speed % to help indicate which direction the error is believed to be
  *   Adjusted defaults for verifying speed
+ *   Added check to attempt recovery during power-on failure loop
+ *   Improved power-on self-diagnostics and warnings
+ *   Adjusted LCD scan to reduce chances of validation errors
  */
 
 
@@ -169,6 +172,7 @@ unsigned long eTimeEndMainLoop = 0, eTimeStartMainLoop=0; // used to compute mai
 unsigned long radiateScanTimeElapsed = 0; // Used to compensate for misc processing time in main loop
 unsigned long radiateOffTimeElapsedEarly = 0; // Used to compensate for misc processing time in main loop
 unsigned long radiateOffTimeElapsedLate = 0;  // Used to compensate for misc processing time in main loop
+int powerOnFailCount = 0;            // Used to tell if we are in a power-on loop
 
 //Run control options (could be adjusted later, defaults set here)
 long radiateOffTime = RADIATE_OFF_TIME;
@@ -220,6 +224,8 @@ void setup()
   #ifdef DEBUG_ON
   if(Serial) 
   {
+    
+    Serial.println(F("----------------------------------------"));
     Serial.print(F("Power source: "));
     Serial.println( isUsbPower() ? F("USB") : F("Battery"));
     Serial.println(F("Setup complete, starting processing loop."));
@@ -242,48 +248,7 @@ void setup()
   #endif
   
   #ifdef DEBUG_CONTROLS_ON
-  // Leaving the if(Serial) on each print becasue we may want headless tests to run on start
-  if(Serial) Serial.println(F("Running control signal tests . . ."));
-  if(isPowerOn())
-  {
-    if(Serial) Serial.println(F("WARNING: Power is already on, may cause unexpected results!"));
-  }
-  boolean passing = true;
-  delay(5000);
-  if(Serial) Serial.println(F("Testing power-on signal . . ."));
-  powerOn();
-  if(Serial) Serial.println(F("Done."));
-  passing = passing && isPowerOn;
-  delay(5000);
-  if(Serial) Serial.println(F("Testing hold-trigger signal . . ."));
-  holdTrigger();
-  if(Serial) Serial.println(F("Done."));
-  passing = passing && isRadiating();
-  delay(5000);
-  if(Serial) Serial.println(F("Testing release-trigger signal . . ."));
-  releaseTrigger();
-  if(Serial) Serial.println(F("Done."));
-  passing = passing && !isRadiating();
-  delay(5000);
-  if(Serial) Serial.println(F("Testing power-off signal . . ."));
-  powerOff();
-  if(Serial) Serial.println(F("Done."));
-  passing = passing && !isPowerOn();
-
-  if(Serial)
-  {
-    Serial.println();
-    if(passing)
-    {
-      Serial.println(F("All tests passed."));
-    }
-    else
-    {
-      Serial.println(F("One or more tests FAILED!"));
-    }
-    delay(5000);
-    Serial.println(F("----------------------------------------"));
-  }
+  buttonLcdSelfTest();
   #endif
 
   // Scan the LCD once so we know what state we are in going into the loop
@@ -451,6 +416,55 @@ void loop()
   #endif
   eTimeEndMainLoop = millis()-eTimeStartMainLoop;
 } //end loop()
+
+
+
+void buttonLcdSelfTest()
+{
+  // Leaving the if(Serial) on each print becasue we may want headless tests to run on start
+  if(Serial) Serial.println(F("----------------------------------------"));
+  if(Serial) Serial.println(F("Running control signal tests . . ."));
+  if(isPowerOn())
+  {
+    if(Serial) Serial.println(F("WARNING: Power is already on, may cause unexpected results!"));
+  }
+  boolean passing = true;
+  delay(5000);
+  if(Serial) Serial.println(F("Testing power-on signal . . ."));
+  powerOn();
+  if(Serial) Serial.println(F("Done."));
+  passing = passing && isPowerOn;
+  delay(5000);
+  if(Serial) Serial.println(F("Testing hold-trigger signal . . ."));
+  holdTrigger();
+  if(Serial) Serial.println(F("Done."));
+  passing = passing && isRadiating();
+  delay(5000);
+  if(Serial) Serial.println(F("Testing release-trigger signal . . ."));
+  releaseTrigger();
+  if(Serial) Serial.println(F("Done."));
+  passing = passing && !isRadiating();
+  delay(5000);
+  if(Serial) Serial.println(F("Testing power-off signal . . ."));
+  powerOff();
+  if(Serial) Serial.println(F("Done."));
+  passing = passing && !isPowerOn();
+
+  if(Serial)
+  {
+    Serial.println();
+    if(passing)
+    {
+      Serial.println(F("All tests passed."));
+    }
+    else
+    {
+      Serial.println(F("One or more tests FAILED!"));
+    }
+    delay(5000);
+    Serial.println(F("----------------------------------------"));
+  }
+}
 
 
 
@@ -956,6 +970,36 @@ void releasePowerButton()
 // Send command to radar
 void powerOn()
 {
+  // Check if we have a repeated power-on failure, attempt recovery
+  if(powerOnFailCount >= 3)
+  {
+    #ifdef INFO_ON
+    if(Serial) Serial.println(F("ERROR: Repeated powerOn failure detected!  Attempting recovery..."));
+    #endif
+    
+    //Try to turn off
+    powerOff();
+
+    //Check power button value and wait with timeout
+    int desiredWait = 10 * powerOnFailCount;
+
+    while(analogRead(POWER_OFF_SENSE_PIN) > 100 && desiredWait > 0)
+    {
+      unsigned long sTime = millis();
+      #ifdef INFO_ON
+      if(Serial)
+      {
+        Serial.print(F("Recovering: Waiting up to "));
+        Serial.print(desiredWait);
+        Serial.println(F(" seconds..."));
+      }
+      #endif
+
+      sDelay(10000);
+      desiredWait-=10;
+    }
+  }
+  
   #ifdef INFO_ON
   if(Serial) Serial.println(F("Sending: powerOn"));
   #endif
@@ -966,23 +1010,45 @@ void powerOn()
   holdPowerButton();
   delay(100);
   releasePowerButton();
-  delay(100);
+  delay(500);
   scanLcd();
 
+  boolean lcdTestResultPass = verifyLcdTest();
   #ifdef DEBUG_ON
   // Verify display self-test
-    if(Serial) Serial.println( verifyLcdTest() ? F("lcdTest: OK") : F("lcdTest: FAIL"));
+  if(Serial) Serial.println( lcdTestResultPass ? F("lcdTest: OK") : F("lcdTest: FAIL"));
+  #elseif defined INFO_ON
+  if(Serial && !lcdTestResultPass) Serial.println(F("WARNING: LCD Power-On test FAIL!"));
   #endif
   
 
   // Wait for self test to clear
-  delay(1100);
+  delay(1000 + (100*powerOnFailCount));
   
   scanLcd();
 
+  // Track if we have failed to power on
+  if(lcdTestResultPass && isPowerOn())
+  {
+    powerOnFailCount=0;
+  }
+  else
+  {
+    powerOnFailCount++;
+  }
+
   // Verify power
   #ifdef INFO_ON
-  if(Serial) Serial.println( isPowerOn() ? F("powerOn: OK") : F("powerOn: FAIL"));
+  if(Serial)
+  {
+    Serial.println( isPowerOn() ? F("powerOn: OK") : F("powerOn: FAIL"));
+    if(powerOnFailCount > 0)
+    {
+      Serial.print(F("WARNING: Power on check failed "));
+      Serial.print(powerOnFailCount);
+      Serial.println(F(" times."));
+    }
+  }
   #endif
 }
 
@@ -1001,10 +1067,11 @@ void powerOff()
   // Set it as an input to let it float
   releasePowerButton();
   //Delay for voltage to stabilize
-  delay(100);
+  delay(500);
 
-  // TODO: Check power off pin voltage and wait a bit
+  // Maybe check power off pin voltage and wait a bit
   // Unsure why this sometimes happens
+  // For now this is part of the "recovery" logic when powering on
   
   scanLcd();
   
@@ -1141,6 +1208,7 @@ void printSerialCommands()
     Serial.println(F("#  Info                                                      #"));
     Serial.println(F("#         [H]ELP      : Help Menu (this menu)                #"));
     Serial.println(F("#         [E]TIME     : eTime Metrics For Main Loop (mS)     #"));
+    Serial.println(F("#         [D]IAG      : Diagnostic self-test Buttons/LCD     #"));
     Serial.println(F("#  Action                                                    #"));
     Serial.println(F("#         [T]RIG    # : Ctrl Trigger       1=Hold 0=Release  #"));
     Serial.println(F("#         [P]OWER   # : Ctrl Power Button  1=On   0=Off      #"));
@@ -1282,6 +1350,14 @@ void readSerialCommands()
             Serial.print(F("INFO ETIME = "));
             Serial.println(eTimeEndMainLoop);
           }
+          break;
+
+        case 'D': // DIAG - Diagnostic self-test Buttons/LCD
+          if(Serial) Serial.println(F("INFO DIAG - Preparing to perform self-tests..."));
+          powerOff();
+          if(Serial) Serial.println(F("INFO DIAG - Starting self-tests..."));
+          buttonLcdSelfTest();
+          if(Serial) Serial.println(F("INFO DIAG - Completed self-tests, resuming normal run."));
           break;
           
         case 'T': // TRIG # - Ctrl Trigger 1=Hold 0=Release
