@@ -48,6 +48,16 @@
  *   Added check to attempt recovery during power-on failure loop
  *   Improved power-on self-diagnostics and warnings
  *   Adjusted LCD scan to reduce chances of validation errors
+ * v8
+ *   Fixed error in debug preprocessor directives
+ *   Added delay option before verification-reading scans
+ *   Enhanced verify-reading to allow multiple verification scans, identifying worst % error
+ *   Re-ordered some things for readability and consistency
+ *   Added some ASCII-Art to source to help explain some options
+ *   Added printing ETime for scan and verify vs main loop
+ *   Added warnings if timing looks bad (verify too long to fit in off-time)
+ *   Added warnings if duty cycle is >50% with projected verify timings
+ *   Added warnings if main loop is repeatedly over-running timing
  */
 
 
@@ -73,14 +83,52 @@
 //#define DEBUG_SERIAL_INPUT_ON  // Print debug statments related to serial input received
 
 // DEFAULT VARIABLE CONFIGURATION OPTIONS
-//      RADIATE suggested times - 125/375 (half-second loop) or 250/775 (one-second loop)
+//      RADIATE suggested times with 0 or 1 verify scan - 125/375 (half-second loop) or 250/775 (one-second loop)
+//      RADIATE suggested times with 2 or 3 verify scans - 125/875 (one-second loop) or 250/2250 (2.5 second loop)
 //                                NOTE minimum time must be greater than (LCD_SCAN_DELAY + LCD_SCAN_TIME)
 #define RADIATE_SCAN_TIME 125   // mS duration of radar active scan; (0)=never radiate; (-1)=always on
-#define RADIATE_OFF_TIME  375   // mS delay idle between pricessing loop iterations
+#define RADIATE_OFF_TIME  875   // mS delay idle between pricessing loop iterations
+#define VERIFY_SPEED      2     // >= 1 - Performs "n" additional scans, runs during 'off' time, may affect duty cycle
+#define VERIFY_WAIT       125   // mS delay before additional scans.  If VERIFY_SPEED = 0 this has no effect.
 #define AUTO_RUN_RADAR    true  // true - start/stop radar automatically; false - control only by serial
-#define PRINT_ZERO_SPEED  false // true - print speed values of zero; false - print only values >0
 #define PRINT_FIRST_SPEED true  // true - print first scan after trigger pulled even if duplicate
-#define VERIFY_SPEED      true  // true - Performs second scan, runs during 'off' time, may affect duty cycle
+#define PRINT_ZERO_SPEED  false // true - print speed values of zero; false - print only values >0
+
+/*
+ * Example timings:
+ * S = Scan
+ * o = Off
+ * V = Verify Scanning
+ * w = Verify Wait
+ * 
+ * RADIATE_SCAN_TIME 125
+ * RADIATE_OFF_TIME  875
+ * VERIFY_SPEED      0
+ * VERIFY_WAIT       125
+ * NOTE - basic scan loop
+ * Time-graph in 1/8 second (125mS) increments:
+ * SoooooooSoooooooSooooooo
+ * \__1s__/\__2s__/\__2s__/
+ * 
+ * VERIFY_SPEED      2
+ * NOTE - runs during "off" affects duty cycle
+ * Time-graph in 1/8 second (125mS) increments:
+ * SwVwVoooSwVwVoooSwVwVooo
+ * \__1s__/\__2s__/\__2s__/ 
+ * 
+ * VERIFY_SPEED      3
+ * NOTE - runs during "off" affects duty cycle
+ * Time-graph in 1/8 second (125mS) increments:
+ * SwVwVwVoSwVwVwVoSwVwVwVo
+ * \__1s__/\__2s__/\__2s__/
+ * 
+ * VERIFY_SPEED      5
+ * NOTE - pushes too long alters timing
+ * Time-graph in 1/8 second (125mS) increments:
+ * SwVwVwVwVwVSwVwVwVwVwVSwVwVwVwVwV
+ * \__1s__/xxx\__2s__/xxx\__2s__/
+ * Notice 'x' runs past 1 second interval
+ */
 
 // CONTROL OPTIONS
 #define LCD_SCAN_DELAY 10   // mS delay for LCD to stabilize before reading
@@ -168,11 +216,14 @@ boolean measuredSpeedValid = false;  // stores whether the speed data is valid
 int verifiedMeasuredSpeedPercent = -999; // Used to compare if verifying the measured speed; -1 if invalid/unverified
 boolean firstMeasurement = false;    // stores whether this is the first measurement of pulling trigger
 int failedDecodeCount = 0;           // count of invalid readings since startup
-unsigned long eTimeEndMainLoop = 0, eTimeStartMainLoop=0; // used to compute main loop elapsed time
-unsigned long radiateScanTimeElapsed = 0; // Used to compensate for misc processing time in main loop
+unsigned long eTimeStartMainLoop = 0,
+              eTimeEndVerifyLoop = 0,
+              eTimeEndMainLoop = 0;  // used to compute main loop elapsed time
+unsigned long radiateScanTimeElapsed = 0;     // Used to compensate for misc processing time in main loop
 unsigned long radiateOffTimeElapsedEarly = 0; // Used to compensate for misc processing time in main loop
 unsigned long radiateOffTimeElapsedLate = 0;  // Used to compensate for misc processing time in main loop
 int powerOnFailCount = 0;            // Used to tell if we are in a power-on loop
+int mainLoopOverrunCount = 0;        // Used to tell if the main loop is frequently over-running time
 
 //Run control options (could be adjusted later, defaults set here)
 long radiateOffTime = RADIATE_OFF_TIME;
@@ -180,7 +231,8 @@ long radiateScanTime = RADIATE_SCAN_TIME;
 boolean autoRunRadar = AUTO_RUN_RADAR;
 boolean printZero = PRINT_ZERO_SPEED;
 boolean printFirst = PRINT_FIRST_SPEED;
-boolean verifySpeed = VERIFY_SPEED;
+int verifySpeed = VERIFY_SPEED;
+long verifyWait = VERIFY_WAIT;
 
 
 
@@ -305,6 +357,31 @@ void loop()
       powerOn();
     }
 
+    if(eTimeEndMainLoop > getTargetLoopTime())
+    {
+      mainLoopOverrunCount++;
+      
+      #ifdef INFO_ON
+      if(Serial && (mainLoopOverrunCount == 3 || (mainLoopOverrunCount % 10) == 0) && mainLoopOverrunCount <= 100)
+      {
+        Serial.print(F("WARNING: Main loop overrun "));
+        Serial.print(mainLoopOverrunCount);
+        Serial.print(F(" times.  Last iteration over by "));
+        Serial.print(eTimeEndMainLoop-getTargetLoopTime());
+        Serial.print(F("mS"));
+        
+        if(mainLoopOverrunCount == 100)
+          Serial.println(F("  *** LAST WARNING! ***"));
+        else
+          Serial.println();
+      }
+      #endif
+    }
+    else
+    {
+      mainLoopOverrunCount=0;
+    }
+
     // Pull the trigger to search for a target
     if(radiateScanTime > 0)
     {
@@ -351,9 +428,22 @@ void loop()
     // Decode the speed
     decodeLcdSpeed();
     
-    // Perform second pass if verify speed is enabled
-    if(verifySpeed && radiateScanTime > 0 && measuredSpeed > 0)
-    {        
+    // Perform additional pass if verify speed is enabled
+    for(int x=0; x < verifySpeed && radiateScanTime > 0 && measuredSpeed > 0; x++)
+    {
+      #ifdef DEBUG_ON
+      if(Serial) 
+      {
+        Serial.print(F("Peforming additional verification pass "));
+        Serial.print(x+1);
+        Serial.print(F(" of "));
+        Serial.println(verifySpeed);
+      }
+      #endif
+
+      // Pre-verification delay
+      sDelay(verifyWait);
+      
       radiateScanTimeElapsed = millis();  // Track radiating time after trigger
       holdTrigger();
       radiateScanTimeElapsed = millis()-radiateScanTimeElapsed;
@@ -370,6 +460,16 @@ void loop()
 
       decodeLcdVerifySpeed();
     }
+    eTimeEndVerifyLoop = millis()-eTimeStartMainLoop;
+    
+    #ifdef DEBUG_MAIN_LOOP_TIME
+    if(Serial)
+    {
+      Serial.print(F("Scan + Verify eTime: "));
+      Serial.print(eTimeEndVerifyLoop);
+      Serial.println(F(" mS"));
+    }
+    #endif
 
     //print the speed
     printSpeed();
@@ -610,31 +710,39 @@ void decodeLcdSpeed(boolean isVerifying)
 
   if(isVerifying)
   {
+    // Mostly for readability
+    int verifyingMeasuredSpeed = decodedSpeed;      // Store decoded speed
+    boolean verifyingSpeedValid = decodedSpeedValid; // Store if decode is valid
+    
     #ifdef DEBUG_LCD_DECODE
     if(Serial)
     {
-      Serial.print(F("decodeLcdSpeed - verifying: decodedSpeedValid="));
-      Serial.print(decodedSpeedValid);
+      Serial.print(F("decodeLcdSpeed - verifying: decodedSpeedValid (verifyingSpeedValid)="));
+      Serial.print(verifyingSpeedValid);
       Serial.print(F("; measuredSpeedValid="));
       Serial.print(measuredSpeedValid);
       Serial.print(F("; measuredSpeed="));
       Serial.print(measuredSpeed);
-      Serial.print(F("; decodedSpeed="));
-      Serial.println(decodedSpeed);
+      Serial.print(F("; decodedSpeed (verifyingMeasuredSpeed) ="));
+      Serial.println(verifyingMeasuredSpeed);
     }
     #endif
     
-    if(decodedSpeedValid && measuredSpeedValid && measuredSpeed > 0)
+    if(verifyingSpeedValid && measuredSpeedValid && measuredSpeed > 0)
     {
-      verifiedMeasuredSpeedPercent = round(  100.0 * (1.0-( ((double)abs(measuredSpeed-decodedSpeed))/((double)measuredSpeed) ))  );
+      int newVerifiedMeasuredSpeedPercent = round(  100.0 * (1.0-( ((double)abs(measuredSpeed-verifyingMeasuredSpeed))/((double)measuredSpeed) ))  );
 
       // Rare case second speed is crazy higher than first, math falls apart.  Cap at 0% confidence
-      if(verifiedMeasuredSpeedPercent < 0)
-        verifiedMeasuredSpeedPercent = 0;
+      if(newVerifiedMeasuredSpeedPercent < 0)
+        newVerifiedMeasuredSpeedPercent = 0;
 
       // If the % verified is between 0 and 100; and also previously measured speed is higher than new decoded (verifying) speed, make negative so we can tell
-      if(verifiedMeasuredSpeedPercent > 0 && verifiedMeasuredSpeedPercent < 100 && measuredSpeed > decodedSpeed)
-        verifiedMeasuredSpeedPercent*= -1;
+      if(newVerifiedMeasuredSpeedPercent > 0 && newVerifiedMeasuredSpeedPercent < 100 && measuredSpeed > verifyingMeasuredSpeed)
+        newVerifiedMeasuredSpeedPercent*= -1;
+
+      //If its the first verification reading, or worse error than existing, store it
+      if(verifiedMeasuredSpeedPercent == -999 || (abs(newVerifiedMeasuredSpeedPercent) < abs(verifiedMeasuredSpeedPercent)) )
+        verifiedMeasuredSpeedPercent = newVerifiedMeasuredSpeedPercent;
     }
     else
     {
@@ -1017,7 +1125,7 @@ void powerOn()
   #ifdef DEBUG_ON
   // Verify display self-test
   if(Serial) Serial.println( lcdTestResultPass ? F("lcdTest: OK") : F("lcdTest: FAIL"));
-  #elseif defined INFO_ON
+  #elif defined INFO_ON
   if(Serial && !lcdTestResultPass) Serial.println(F("WARNING: LCD Power-On test FAIL!"));
   #endif
   
@@ -1194,6 +1302,38 @@ void enableInterrupt()
 
 
 
+// Returns the ideal loop time (if no over-run)
+long getTargetLoopTime()
+{
+  return radiateScanTime + radiateOffTime;
+}
+
+// Returns the projected loop time (with over-run)
+long getProjectedLoopTime()
+{
+  if(getScanPlusVerifyTime() > getTargetLoopTime())
+    return getScanPlusVerifyTime();
+  else
+    return getTargetLoopTime();
+}
+
+// Returns the projected scan+verify time
+long getScanPlusVerifyTime()
+{
+  // Some of these values are guesswork for "extra processing" in the code combined with how many times the LCD scan code is called
+  return (radiateScanTime + (2*(LCD_SCAN_DELAY + LCD_SCAN_TIME))) + (verifySpeed * (verifyWait + radiateScanTime + (1*(LCD_SCAN_DELAY + LCD_SCAN_TIME))));
+}
+
+// Returns the projected worst case duty cycle
+int getProjectedDutyCycle()
+{
+  long totalRadiateTime = radiateScanTime + (verifySpeed * radiateScanTime);
+  
+  return (totalRadiateTime*100)/getProjectedLoopTime();
+}
+
+
+
 // print expected serial command syntax
 void printSerialCommands()
 {
@@ -1201,13 +1341,14 @@ void printSerialCommands()
   {
     //                    NOTE - First letter of command must be unique
     //                           because it is used for switch statment
+    //                    NOTE - Sort order groups functionally, not alphabetical!
     Serial.println(F("##############################################################"));
     Serial.println(F("#                                                            #"));
     Serial.println(F("#         [CMD]    ARG Action                                #"));
     Serial.println(F("#         -------- --- ------------------------------------  #"));
     Serial.println(F("#  Info                                                      #"));
     Serial.println(F("#         [H]ELP      : Help Menu (this menu)                #"));
-    Serial.println(F("#         [E]TIME     : eTime Metrics For Main Loop (mS)     #"));
+    Serial.println(F("#         [E]TIME     : eTime Metrics For Main Loop (msec)   #"));
     Serial.println(F("#         [D]IAG      : Diagnostic self-test Buttons/LCD     #"));
     Serial.println(F("#  Action                                                    #"));
     Serial.println(F("#         [T]RIG    # : Ctrl Trigger       1=Hold 0=Release  #"));
@@ -1226,17 +1367,18 @@ void printSerialCommands()
     Serial.println(F("#                         measuredSpeed=0                    #"));
     Serial.println(F("#  Config                                                    #"));
     Serial.println(F("#         [G]ET       : Print current config values          #"));
-    Serial.println(F("#         [A]UTO    # : Radar auto-processing   1=On 0=Off   #"));
     Serial.println(F("#         [S]CAN    # : Set Radiating Scan Time (long msec)  #"));
     Serial.println(F("#                       (0)=never radiate; (-1)=always on    #"));
     Serial.println(F("#         [O]FF     # : Set Radiating Off Time  (long msec)  #"));
     Serial.println(F("#                       NOTE: Ignored if SCAN = 1 or 0       #"));
     Serial.println(F("#         [C]ORR    # : Correction for offset angle (0-89)   #"));
     Serial.println(F("#                       NOTE: Init causes USB re-detect      #"));
-    Serial.println(F("#         [F]IRST   # : Print 1st reading always 1=On 0=Off  #"));
-    Serial.println(F("#         [V]ERIFY  # : Verify measured speeds   1=On 0=Off  #"));
-    Serial.println(F("#                       Performs second scan, runs during    #"));
+    Serial.println(F("#         [V]ERIFY  # : Verify measured speed (int x) 0=Off  #"));
+    Serial.println(F("#                       Perform # add'l scans, runs during   #"));
     Serial.println(F("#                       'off' time, may affect duty cycle    #"));
+    Serial.println(F("#         [W]AIT    # : Pre-Verify Wait time (long msec)     #"));
+    Serial.println(F("#         [A]UTO    # : Radar auto-processing   1=On 0=Off   #"));
+    Serial.println(F("#         [F]IRST   # : Print 1st reading always 1=On 0=Off  #"));
     Serial.println(F("#         [Z]ERO    # : Print zero-speed scans   1=On 0=Off  #"));
     Serial.println(F("#         [I]NIT   -9 : Init & Reboot (arg = -9 to confirm)  #"));
     Serial.println(F("#                                                            #"));
@@ -1347,8 +1489,21 @@ void readSerialCommands()
         case 'E': // ETIME - Show eTime Metrics For Main Loop
           if(Serial)
           {
-            Serial.print(F("INFO ETIME = "));
-            Serial.println(eTimeEndMainLoop);
+            Serial.print(F("INFO ETIME : Scan + Verifying = "));
+            Serial.print(eTimeEndVerifyLoop);
+            Serial.print(F("mS  (expected "));
+            Serial.print(getScanPlusVerifyTime());
+            Serial.println(F("mS)"));
+            
+            Serial.print(F("INFO ETIME : Total Loop Time  = "));
+            Serial.print(eTimeEndMainLoop);
+            Serial.print(F("mS  (expected "));
+            Serial.print(getProjectedLoopTime());
+            Serial.println(F("mS)"));
+
+            Serial.print(F("INFO ETIME : Projected Duty Cycle  = "));
+            Serial.print(getProjectedDutyCycle());
+            Serial.println(F("%"));
           }
           break;
 
@@ -1450,8 +1605,6 @@ void readSerialCommands()
         case 'G': // GET - Print current config values
           if(Serial)
           {
-            Serial.print(F("CONFIG AUTO   = "));
-            Serial.println(autoRunRadar);
             
             Serial.print(F("CONFIG SCAN   = "));
             Serial.println(radiateScanTime);
@@ -1462,34 +1615,21 @@ void readSerialCommands()
             Serial.print(F("CONFIG CORR   = "));
             Serial.println(offsetAngle);
             
+            Serial.print(F("CONFIG VERIFY = "));
+            Serial.println(verifySpeed);
+
+            Serial.print(F("CONFIG WAIT   = "));
+            Serial.println(verifyWait);
+
+            Serial.print(F("CONFIG AUTO   = "));
+            Serial.println(autoRunRadar);
+            
             Serial.print(F("CONFIG FIRST  = "));
             Serial.println(printFirst);
             
             Serial.print(F("CONFIG ZERO   = "));
             Serial.println(printZero);
-            
-            Serial.print(F("CONFIG VERIFY = "));
-            Serial.println(verifySpeed);
           }
-          break;
-          
-        case 'A': // AUTO - Radar auto-processing 1=On 0=Off
-          if(serialCommandArg == 0 || serialCommandArg == 1)
-          {
-            autoRunRadar=serialCommandArg;
-          }
-          else
-          {
-            if(Serial) Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
-          }
-
-          #ifdef INFO_SERIAL_INPUT_ON
-          if(Serial)
-          {
-            Serial.print(F("CONFIG AUTO  = "));
-            Serial.println(autoRunRadar);
-          }
-          #endif
           break;
           
         case 'S': // SCAN - Set Radiating Scan Time (long msec) (0)=never radiate; (-1)=always on
@@ -1548,6 +1688,68 @@ void readSerialCommands()
           }
           #endif
           break;
+                  
+        case 'V': // Verify measured speed (int x) 0=Off
+          if(serialCommandArg >= 0)
+          {
+            verifySpeed=serialCommandArg;
+          }
+          else
+          {
+            if(Serial)
+            {
+              Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
+              Serial.println(F("NOTE:  Don't be absurd doing too many scans!"));
+              Serial.println(F("NOTE:  (max 1500 feet range) / (min 10 miles per hour) = 102.272727 seconds in range"));
+            }
+          }
+
+          #ifdef INFO_SERIAL_INPUT_ON
+          if(Serial)
+          {
+            Serial.print(F("CONFIG VERIFY = "));
+            Serial.println(verifySpeed);
+          }
+          #endif
+          break;
+          
+        case 'W': // Pre-Verify Delay time (long msec)
+          if(serialCommandArg >= 0)
+          {
+            verifyWait=serialCommandArg;
+          }
+          else
+          {
+            if(Serial) Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
+          }
+
+          #ifdef INFO_SERIAL_INPUT_ON
+          if(Serial)
+          {
+            Serial.print(F("CONFIG WAIT   = "));
+            Serial.println(verifyWait);
+          }
+          #endif
+          break;
+          
+        case 'A': // AUTO - Radar auto-processing 1=On 0=Off
+          if(serialCommandArg == 0 || serialCommandArg == 1)
+          {
+            autoRunRadar=serialCommandArg;
+          }
+          else
+          {
+            if(Serial) Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
+          }
+
+          #ifdef INFO_SERIAL_INPUT_ON
+          if(Serial)
+          {
+            Serial.print(F("CONFIG AUTO  = "));
+            Serial.println(autoRunRadar);
+          }
+          #endif
+          break;
 
         case 'F': // FIRST - Print 1st reading always 1=On 0=Off
           if(serialCommandArg == 0 || serialCommandArg == 1)
@@ -1585,25 +1787,6 @@ void readSerialCommands()
             Serial.println(printZero);
           }
           #endif
-          break;  
-                  
-        case 'V': // ZERO - Print zero-speed scans 1=On 0=Off
-          if(serialCommandArg == 0 || serialCommandArg == 1)
-          {
-            verifySpeed=serialCommandArg;
-          }
-          else
-          {
-            if(Serial) Serial.println(F("ERROR: Invalid command.  Try \"HELP\""));
-          }
-
-          #ifdef INFO_SERIAL_INPUT_ON
-          if(Serial)
-          {
-            Serial.print(F("CONFIG VERIFY = "));
-            Serial.println(verifySpeed);
-          }
-          #endif
           break;
 
         case 'I': // Init - Init & Reboot (arg = -9 to confirm)
@@ -1629,6 +1812,31 @@ void readSerialCommands()
           break;
           
       } // end switch/case
+
+      //Print warning if timings look bad
+      long remainderTime = getTargetLoopTime() - getProjectedLoopTime();
+      if(remainderTime < 0)
+      {
+        if(Serial)
+        {
+          Serial.print(F("WARNING: Loop timing looks bad!  Projected extra time in 'Off' loop is "));
+          Serial.print(remainderTime);
+          Serial.println(F(" mS"));
+        }
+      }
+      
+      //Print warning if duty cycle is high
+      int dutyCycle = getProjectedDutyCycle();
+      if(dutyCycle > 50)
+      {
+        if(Serial)
+        {
+          Serial.print(F("WARNING: Duty cycle looks high at "));
+          Serial.print(dutyCycle);
+          Serial.println(F("%"));
+        }
+      }
+      
     } // end if: input length >1
   }// end if: serial
 }// end readSerialCommands()
