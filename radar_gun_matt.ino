@@ -58,6 +58,7 @@
  *   Added warnings if timing looks bad (verify too long to fit in off-time)
  *   Added warnings if duty cycle is >50% with projected verify timings
  *   Added warnings if main loop is repeatedly over-running timing
+ *   Fixed alignment of print statments for readability
  */
 
 
@@ -1745,7 +1746,7 @@ void readSerialCommands()
           #ifdef INFO_SERIAL_INPUT_ON
           if(Serial)
           {
-            Serial.print(F("CONFIG AUTO  = "));
+            Serial.print(F("CONFIG AUTO   = "));
             Serial.println(autoRunRadar);
           }
           #endif
