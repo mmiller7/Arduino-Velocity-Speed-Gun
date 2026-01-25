@@ -4,6 +4,14 @@ This project is based on the work documented in [Kevin Darrah Wiki](https://www.
 
 
 
+### Useful notes:
+K-Band radar module (not Ka, just K)
+Likely beam width 12-15 degrees
+Advertised specs for vehicle detection 10-200mph up to 1500ft range
+Teardown: https://www.allaboutcircuits.com/news/teardown-tuesday-radar-gun/
+
+
+
 ### Rough parts list:
 * Bushnell 101911 Velocity Speed Gun
 * Arduino Micro (or other small ATMEGA32U4 board).  NOTE - many cheap clones don't break out all 12 analog inputs!
