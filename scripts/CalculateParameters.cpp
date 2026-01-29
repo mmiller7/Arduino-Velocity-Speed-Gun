@@ -367,6 +367,13 @@ int main(int argc, char* argv[])
 					cout << "----> Reducing waitTime by half (case >=500)" << endl;
 					#endif
 					waitTime = waitTime / 2;
+					if(verifyCount < 3)
+					{
+						#ifdef DEBUG_ON
+						cout << "--------> Increasing verifyCount by 1" << endl;
+						#endif
+						verifyCount++;
+					}
 					changes++;
 				}
 				else if(verifyCount > 2)
@@ -403,9 +410,9 @@ int main(int argc, char* argv[])
 				else if(preferredSweepsPerCar > 2)
 				{
 					#ifdef DEBUG_ON
-					cout << "----> Reducing preferredSweepsPerCar by 1/4 and recomputing starting point" << endl;
+					cout << "----> Reducing preferredSweepsPerCar by 1 and recomputing starting point" << endl;
 					#endif
-					preferredSweepsPerCar = preferredSweepsPerCar * 0.75;
+					preferredSweepsPerCar-=1;
 					computeTiming(secInBeam, preferredSweepsPerCar, maxLoopTime, scanTime, offTime, verifyCount, waitTime);
 					changes++;
 				}
@@ -612,4 +619,9 @@ void computeTiming(double &secInBeam, int &preferredSweepsPerCar, long &maxLoopT
 
 	// Pick the "wait" time based on scan time
 	waitTime = scanTime;
+	// Make scan time more sensible
+	if(waitTime > 1000)
+	{
+		waitTime = waitTime / 2;
+	}
 }
