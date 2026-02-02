@@ -109,25 +109,25 @@
  * NOTE - basic scan loop
  * Time-graph in 1/8 second (125mS) increments:
  * SoooooooSoooooooSooooooo
- * \__1s__/\__2s__/\__2s__/
+ * \__1s__/\__1s__/\__1s__/
  * 
  * VERIFY_SPEED      2
  * NOTE - runs during "off" affects duty cycle
  * Time-graph in 1/8 second (125mS) increments:
  * SwVwVoooSwVwVoooSwVwVooo
- * \__1s__/\__2s__/\__2s__/ 
+ * \__1s__/\__1s__/\__1s__/ 
  * 
  * VERIFY_SPEED      3
  * NOTE - runs during "off" affects duty cycle
  * Time-graph in 1/8 second (125mS) increments:
  * SwVwVwVoSwVwVwVoSwVwVwVo
- * \__1s__/\__2s__/\__2s__/
+ * \__1s__/\__1s__/\__1s__/
  * 
  * VERIFY_SPEED      5
  * NOTE - pushes too long alters timing
  * Time-graph in 1/8 second (125mS) increments:
  * SwVwVwVwVwVSwVwVwVwVwVSwVwVwVwVwV
- * \__1s__/xxx\__2s__/xxx\__2s__/
+ * \__1s__/xxx\__1s__/xxx\__1s__/
  * Notice 'x' runs past 1 second interval
  */
 
