@@ -1,13 +1,15 @@
 #include <iostream>
 #include <cmath>
 
-//#define DEBUG_ON
+#define DEBUG_ON
+//#define DEBUG_ARGUMENTS_ON
 
 // Radar gun parameters
 const double RADAR_RANGE = 1500.0; // feet
 const double BEAM_ANGLE = 15.0; // degrees (assuming 12-18 deg for consumer grade K-band)
 // Computation parameters
 const int TARGET_VERIFIED_COUNT = 5; // count
+const int TARGET_DUTY_CYCLE = 30; // percent
 const int ITERATION_LIMIT = 500; // count
 
 // Geometry reference
@@ -37,6 +39,11 @@ const int expectedSpeedMin = 10;
 const int expectedSpeedMax = 200;
 const int sweepsPerCarMin = 1;
 const int sweepsPerCarMax = 100;
+
+// Runtime options
+#ifdef DEBUG_ON
+bool verbose = false;
+#endif
 
 
 
@@ -132,6 +139,7 @@ int main(int argc, char* argv[])
 {
 		// Input data
 		double radarRangeDistance = -1; // feet
+		double radarRangeLimit = -1; // feet
 		double radarRoadEdgeDistance = -1; // feet
 		int expectedSpeed = -1; // MPH
 		int expectedSpeedFps = -1; // feet per second
@@ -142,7 +150,7 @@ int main(int argc, char* argv[])
 		// Check if command line parameters included inputs or we should prompt
 		for(int x=0; x < argc; x++)
 		{
-			#ifdef DEBUG_ON
+			#ifdef DEBUG_ARGUMENTS_ON
 			cout << "CLI: [" << x << "]=" << argv[x] << endl;
 			#endif
 
@@ -151,46 +159,69 @@ int main(int argc, char* argv[])
 				cout << endl;
 				cout << "Usage: CalculateParameters [options]" << endl;
 				cout << endl;
-				cout << "  -h    Help/Usage" << endl;
-				cout << "  -r    Range distance to target (" << radarRangeDistMin << "-" << radarRangeDistMax << ")" << endl;
-				cout << "  -d    Distance from road edge (" << radarRoadEdgeDistMin << "-" << radarRoadEdgeDistMax << ")" << endl;
-				cout << "  -s    Speed of traffic (" << expectedSpeedMin << "-" << expectedSpeedMax << ")" << endl;
-				cout << "  -n    Number sweeps per car (" << sweepsPerCarMin << "-" << sweepsPerCarMax << ")" << endl;
+				cout << "  -h     Help/Usage" << endl;
+				cout << "  -r     Range distance to target (" << radarRangeDistMin << "-" << radarRangeDistMax << ")" << endl;
+				cout << "  -l     Limit distance (" << radarRangeDistMin << "-" << radarRangeDistMax << ")" << endl;
+				cout << "  -d     Distance from road edge (" << radarRoadEdgeDistMin << "-" << radarRoadEdgeDistMax << ")" << endl;
+				cout << "  -s     Speed of traffic (" << expectedSpeedMin << "-" << expectedSpeedMax << ")" << endl;
+				cout << "  -n     Number sweeps per car (" << sweepsPerCarMin << "-" << sweepsPerCarMax << ")" << endl;
+				#ifdef DEBUG_ON
+				cout << "  -DEBUG Debug processing" << endl;
+				#endif
 				cout << endl;
 
 				return EXIT_FAILURE;
 			}
 
-			if(checkArgumentFlag(argv[x], "-r"))
+			#ifdef DEBUG_ON
+			if(checkArgumentFlag(argv[x], "-DEBUG"))
 			{
-				if(radarRangeDistance != -1)
-					cout << "WARNING - duplicate argument '-r' specified: " << argv[x] << endl;
-				if(!getNumericArgument(argv[x], radarRangeDistance, radarRangeDistMin, radarRangeDistMax))
-					cout << "Data validation failed for argument " << argv[x] << "; ignoring." << endl;
+				verbose = true;
 			}
+			#endif
 
-			if(checkArgumentFlag(argv[x], "-d"))
+			if(x > 0)
 			{
-				if(radarRoadEdgeDistance != -1)
-					cout << "WARNING - duplicate argument '-d' specified: " << argv[x] << endl;
-				if(!getNumericArgument(argv[x], radarRoadEdgeDistance, radarRoadEdgeDistMin, radarRoadEdgeDistMax))
-					cout << "Data validation failed for argument " << argv[x] << "; ignoring." << endl;
-			}
 
-			if(checkArgumentFlag(argv[x], "-s"))
-			{
-				if(expectedSpeed != -1)
-					cout << "WARNING - duplicate argument '-s' specified: " << argv[x] << endl;
-				if(!getNumericArgument(argv[x], expectedSpeed, expectedSpeedMin, expectedSpeedMax))
-					cout << "Data validation failed for argument " << argv[x] << "; ignoring." << endl;
-			}
+				if(checkArgumentFlag(argv[x-1], "-r"))
+				{
+					if(radarRangeDistance != -1)
+						cout << "WARNING - duplicate argument '-r' specified: " << argv[x] << endl;
+					if(!getNumericArgument(argv[x], radarRangeDistance, radarRangeDistMin, radarRangeDistMax))
+						cout << "Data validation failed for argument " << argv[x] << "; ignoring." << endl;
+				}
 
-			if(checkArgumentFlag(argv[x], "-n"))
-			{
-				if(preferredSweepsPerCar != -1)
-					cout << "WARNING - duplicate argument '-n' specified: " << argv[x] << endl;
-				if(!getNumericArgument(argv[x], preferredSweepsPerCar, sweepsPerCarMin, sweepsPerCarMax))
-					cout << "Data validation failed for argument " << argv[x] << "; ignoring." << endl;
+				if(checkArgumentFlag(argv[x-1], "-l"))
+				{
+					if(radarRangeLimit != -1)
+						cout << "WARNING - duplicate argument '-l' specified: " << argv[x] << endl;
+					if(!getNumericArgument(argv[x], radarRangeLimit, radarRangeDistMin, radarRangeDistMax))
+						cout << "Data validation failed for argument " << argv[x] << "; ignoring." << endl;
+				}
+
+				if(checkArgumentFlag(argv[x-1], "-d"))
+				{
+					if(radarRoadEdgeDistance != -1)
+						cout << "WARNING - duplicate argument '-d' specified: " << argv[x] << endl;
+					if(!getNumericArgument(argv[x], radarRoadEdgeDistance, radarRoadEdgeDistMin, radarRoadEdgeDistMax))
+						cout << "Data validation failed for argument " << argv[x] << "; ignoring." << endl;
+				}
+
+				if(checkArgumentFlag(argv[x-1], "-s"))
+				{
+					if(expectedSpeed != -1)
+						cout << "WARNING - duplicate argument '-s' specified: " << argv[x] << endl;
+					if(!getNumericArgument(argv[x], expectedSpeed, expectedSpeedMin, expectedSpeedMax))
+						cout << "Data validation failed for argument " << argv[x] << "; ignoring." << endl;
+				}
+
+				if(checkArgumentFlag(argv[x-1], "-n"))
+				{
+					if(preferredSweepsPerCar != -1)
+						cout << "WARNING - duplicate argument '-n' specified: " << argv[x] << endl;
+					if(!getNumericArgument(argv[x], preferredSweepsPerCar, sweepsPerCarMin, sweepsPerCarMax))
+						cout << "Data validation failed for argument " << argv[x] << "; ignoring." << endl;
+				}
 			}
 		}
 
@@ -201,6 +232,11 @@ int main(int argc, char* argv[])
 			 radarRangeDistance =    getNumericInput("Enter radar range distance to target (ft)?      ",radarRangeDistMin,radarRangeDistMax);
 		else
 			 cout << "CLI: radar range distance to target = " << radarRangeDistance << " ft" << endl;
+
+		if(radarRangeLimit == -1)
+			 radarRangeLimit =       getNumericInput("Enter radar range LIMIT distance (ft)?          ",radarRangeDistMin,radarRangeDistMax);
+		else
+			 cout << "CLI: radar range LIMIT distance = " << radarRangeLimit << " ft" << endl;
 
 		if(radarRoadEdgeDistance == -1)
 			 radarRoadEdgeDistance = getNumericInput("Enter radar distance from edge of road (ft)?    ",radarRoadEdgeDistMin,radarRoadEdgeDistMax);
@@ -229,6 +265,13 @@ int main(int argc, char* argv[])
 		{
 			cout << endl;
 			cout << "  WARNING - preferred sweeps per car is < 2, may miss vehicles entering mid-sweep!" << endl;
+		}
+
+		if(radarRangeLimit <= radarRangeDistance)
+		{
+			cout << endl;
+			cout << "  WARNING - specified distance limit is suspiciously below range to target!" << endl;
+			cout << "            May miss vehicles between sweeps!" << endl;
 		}
 
 		cout << endl;
@@ -273,7 +316,7 @@ int main(int argc, char* argv[])
 		if(offsetAngleDeg < HALF_BEAM_ANGLE_DEG)
 		{
 			// If the angle of the gun is less-than the half-beam angle, it is functionally always head-on
-			roadBeamSpan = RADAR_RANGE; 
+			roadBeamSpan = radarRangeLimit; 
 		}
 		else
 		{
@@ -330,20 +373,21 @@ int main(int argc, char* argv[])
 		int iterations = 0;
 		int changes = 0;
 		testRadarConfig(scanTime, offTime, verifyCount, waitTime);
-		while((!testRadarLoop() || testRadarDutyCycle() > 50) && iterations < ITERATION_LIMIT)
+		while((!testRadarLoop() || testRadarDutyCycle() > TARGET_DUTY_CYCLE) && iterations < ITERATION_LIMIT)
 		{
 			iterations++;
 
 			testRadarConfig(scanTime, offTime, verifyCount, waitTime);
 
 			if(testRadarDutyCycle() > 50 && verifyCount > 0 ||
-			   testRadarDutyCycle() > 40 && verifyCount > 2)
+			   testRadarDutyCycle() > TARGET_DUTY_CYCLE && verifyCount > 2)
 			{
 				// If the duty cycle is too high
-				if(scanTime > 2000)
+				if(scanTime > RADIATE_SCAN_TIME)
 				{
 					#ifdef DEBUG_ON
-					cout << "---> Shifting 10mS scanTime to offTime" << endl;
+					if(verbose)
+						cout << "---> Shifting 10mS scanTime to offTime" << endl;
 					#endif
 					scanTime-=10;
 					offTime+=10;
@@ -352,7 +396,8 @@ int main(int argc, char* argv[])
 				else
 				{
 					#ifdef DEBUG_ON
-					cout << "----> Reducing verifyCount by 1 (case duty cycle)" << endl;
+					if(verbose)
+						cout << "----> Reducing verifyCount by 1 (case duty cycle)" << endl;
 					#endif
 					verifyCount--;
 					changes++;
@@ -361,16 +406,18 @@ int main(int argc, char* argv[])
 			else if(!testRadarLoop())
 			{
 				// If the loop ran too long
-				if(waitTime >= 500)
+				if(waitTime >= VERIFY_WAIT)
 				{
 					#ifdef DEBUG_ON
-					cout << "----> Reducing waitTime by half (case >=500)" << endl;
+					if(verbose)
+						cout << "----> Reducing waitTime by half (case >=VERIFY_WAIT)" << endl;
 					#endif
 					waitTime = waitTime / 2;
-					if(verifyCount < 3)
+					if(verifyCount < TARGET_VERIFIED_COUNT)
 					{
 						#ifdef DEBUG_ON
-						cout << "--------> Increasing verifyCount by 1" << endl;
+						if(verbose)
+							cout << "--------> Increasing verifyCount by 1" << endl;
 						#endif
 						verifyCount++;
 					}
@@ -379,7 +426,8 @@ int main(int argc, char* argv[])
 				else if(verifyCount > 2)
 				{
 					#ifdef DEBUG_ON
-					cout << "----> Reducing verifyCount by 1 (case >2 and loop long)" << endl;
+					if(verbose)
+						cout << "----> Reducing verifyCount by 1 (case >2 and loop long)" << endl;
 					#endif
 					verifyCount--;
 					changes++;
@@ -387,14 +435,16 @@ int main(int argc, char* argv[])
 				else if(waitTime >= 50)
 				{
 					#ifdef DEBUG_ON
-					cout << "----> Reducing waitTime by half (case >=50)" << endl;
+					if(verbose)
+						cout << "----> Reducing waitTime by half (case >=50)" << endl;
 					#endif
 					waitTime = waitTime / 2;
 					changes++;
-					if(verifyCount < 3)
+					if(verifyCount < TARGET_VERIFIED_COUNT)
 					{
 						#ifdef DEBUG_ON
-						cout << "--------> Increasing verifyCount by 1" << endl;
+						if(verbose)
+							cout << "--------> Increasing verifyCount by 1" << endl;
 						#endif
 						verifyCount++;
 					}
@@ -402,7 +452,8 @@ int main(int argc, char* argv[])
 				else if(waitTime < 50 && waitTime > 0)
 				{
 					#ifdef DEBUG_ON
-					cout << "----> Reducing waitTime to zero" << endl;
+					if(verbose)
+						cout << "----> Reducing waitTime to zero" << endl;
 					#endif
 					waitTime = 0;
 					changes++;
@@ -410,7 +461,8 @@ int main(int argc, char* argv[])
 				else if(preferredSweepsPerCar > 2)
 				{
 					#ifdef DEBUG_ON
-					cout << "----> Reducing preferredSweepsPerCar by 1 and recomputing starting point" << endl;
+					if(verbose)
+						cout << "----> Reducing preferredSweepsPerCar by 1 and recomputing starting point" << endl;
 					#endif
 					preferredSweepsPerCar-=1;
 					computeTiming(secInBeam, preferredSweepsPerCar, maxLoopTime, scanTime, offTime, verifyCount, waitTime);
@@ -474,7 +526,8 @@ bool checkArgumentFlag(string arg, string flag)
 {
 	if(arg.length() >= 2)
 	{
-		return arg.substr(0,2) == flag;
+		//return arg.substr(0,2) == flag;
+		return arg == flag;
 	}
 	else
 	{
@@ -492,7 +545,16 @@ bool getNumericArgument(string arg, double &value, int min, int max)
 		arg.erase(0, pos + del.length());
 	}
 
-	double strValue = std::stod(arg);
+	double strValue = 0;
+	try
+	{
+		strValue = std::stod(arg);
+	}
+	catch (...)
+	{
+		cout << "Invalid non-numeric input: " << arg << endl;
+		return false;
+	}
 
 	if(strValue < min || strValue > max)
 	{
@@ -620,7 +682,7 @@ void computeTiming(double &secInBeam, int &preferredSweepsPerCar, long &maxLoopT
 	// Pick the "wait" time based on scan time
 	waitTime = scanTime;
 	// Make scan time more sensible
-	if(waitTime > 1000)
+	while(waitTime > 1000)
 	{
 		waitTime = waitTime / 2;
 	}
