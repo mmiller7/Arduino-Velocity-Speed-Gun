@@ -677,7 +677,11 @@ void computeTiming(double &secInBeam, int &preferredSweepsPerCar, long &maxLoopT
 	}
 
 	// Pick preferred verify count
-	verifyCount = TARGET_VERIFIED_COUNT;
+	verifyCount = (offTime / scanTime) - 1;
+	if(verifyCount < TARGET_VERIFIED_COUNT)
+	{
+		verifyCount = TARGET_VERIFIED_COUNT;
+	}
 
 	// Pick the "wait" time based on scan time
 	waitTime = scanTime;
