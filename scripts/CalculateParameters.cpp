@@ -682,8 +682,8 @@ void computeTiming(double &secInBeam, int &preferredSweepsPerCar, long &maxLoopT
 	// Pick the "wait" time based on scan time
 	waitTime = scanTime;
 	// Make scan time more sensible
-	while(waitTime > 1000)
+	if(waitTime > 500)
 	{
-		waitTime = waitTime / 2;
+		waitTime = 500;
 	}
 }
