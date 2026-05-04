@@ -6,6 +6,30 @@ else
     filename="$1"
 fi
 
+# DANGER - dedup function is VERY slow processing large files!
+lastTime=0
+function dedup() {
+  while read -r line; do
+    dateTimeString=$(echo -n "$line" | awk -F '\t' '{print $1 " " $2}' | sed 's/-/ /g')
+    dateTimeInt=$(date -d "$dateTimeString" "+%s" 2> /dev/null)
+    if [[ "$?" != 0 ]]; then
+      #echo "Date error - zero time and print"
+      dateTimeInt=0
+    fi
+
+    threshold=$(($lastTime + 2))
+    #echo $dateTimeInt
+
+    if [[ "$dateTimeInt" -eq "0" ]] || [[ "$dateTimeInt" -gt $threshold ]]; then
+      echo -e "$line"
+    #else
+    #  echo "DUP SKIP"
+    fi
+
+    lastTime="$dateTimeInt"
+  done
+}
+
 echo "Summary of file: $filename"
 
 echo ""
